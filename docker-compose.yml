@@ -1,0 +1,52 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: shop-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: shop
+      MYSQL_USER: shop
+      MYSQL_PASSWORD: shoppass
+    volumes:
+      - mysql-data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks: [shop]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "shop", "-pshoppass"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build: ./backend
+    container_name: shop-backend
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PORT: 4000
+      JWT_SECRET: dev-secret-change-me
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: shop
+      MYSQL_PASSWORD: shoppass
+      MYSQL_DATABASE: shop
+    ports:
+      - "4000:4000"
+    networks: [shop]
+
+  frontend:
+    build: ./frontend
+    container_name: shop-frontend
+    depends_on: [backend]
+    ports:
+      - "5173:5173"
+    networks: [shop]
+
+volumes:
+  mysql-data:
+
+networks:
+  shop:
+    driver: bridge
