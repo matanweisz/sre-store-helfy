@@ -33,9 +33,19 @@ services:
       MYSQL_PASSWORD: shoppass
       MYSQL_DATABASE: shop
       PAYMENT_FAILURE_RATE: ${PAYMENT_FAILURE_RATE:-0.08}
+      NODE_ENV: development
+      LOG_LEVEL: info
     ports:
       - "4000:4000"
     networks: [shop]
+    # Explicit json-file driver so Filebeat's container parser can read the
+    # wrapped JSON envelope. Without this, Rancher Desktop sometimes defaults
+    # to a driver Filebeat can't tail.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   frontend:
     build: ./frontend
@@ -62,9 +72,72 @@ services:
     networks: [shop]
     depends_on: [backend]
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.4.1
+    container_name: shop-elasticsearch
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      ingest.geoip.downloader.enabled: "false"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks: [shop]
+    healthcheck:
+      # ES 9.x slim image ships without curl OR wget. Use bash's built-in
+      # /dev/tcp probe to check the port is accepting connections — that's
+      # sufficient as a "ready" signal since by then the HTTP layer is up.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9200 && echo -e 'GET /_cluster/health HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | grep -E '\"status\":\"(yellow|green)\"' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.4.1
+    container_name: shop-kibana
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      SERVER_PUBLICBASEURL: http://localhost:5601
+    ports:
+      - "5601:5601"
+    networks: [shop]
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:9.4.1
+    container_name: shop-filebeat
+    # filebeat needs to read the docker socket and the per-container log files.
+    # Running as root is the Filebeat-supported way to access /var/lib/docker.
+    user: root
+    # The image's ENTRYPOINT is `filebeat` (no args). We append flags after the
+    # implicit `filebeat` command. Long-form flags need `--`.
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    networks: [shop]
+
 volumes:
   mysql-data:
   prometheus-data:
+  es-data:
+  filebeat-data:
 
 networks:
   shop:

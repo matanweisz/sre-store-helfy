@@ -82,6 +82,17 @@ router.post(
     ecomCheckoutsTotal.inc({ outcome: 'success' });
     ecomOrderValueCents.observe(total_cents);
 
+    req.log.info(
+      {
+        ecom: {
+          order_id: String(orderId),
+          checkout_total_cents: total_cents,
+          cart_item_count: (items as CheckoutItem[]).length,
+        },
+      },
+      'order created'
+    );
+
     res.status(201).json({ order_id: orderId, total_cents, status: 'pending_payment' });
   })
 );

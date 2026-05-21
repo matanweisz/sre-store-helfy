@@ -67,6 +67,7 @@ router.post(
     const user = { id: (row as { id: number }).id, email: (row as { email: string }).email };
     const token = await createSession(user);
     authLoginAttemptsTotal.inc({ outcome: 'succeeded' });
+    req.log.info({ user: { id: String(user.id) } }, 'login succeeded');
     res.json({ token, user });
   })
 );

@@ -32,13 +32,13 @@ Live checklist of every step in the 4-hour build. Tick as we go.
 - [ ] Commit: `feat(backend): prom-client instrumentation + prometheus service`
 
 ## Block 3 — Elasticsearch + Filebeat + structured logs (20 min)
-- [ ] `npm install pino pino-http`
-- [ ] `backend/src/logger.ts` — ECS-aligned pino
-- [ ] Wire `pinoHttp` middleware; replace `console.*` in error handler
-- [ ] Event logs in payment.ts, checkout.ts, auth.ts
-- [ ] `elasticsearch` + `filebeat` services in compose
-- [ ] `filebeat/filebeat.yml` with docker autodiscover + ndjson parser
-- [ ] **Verify**: `curl localhost:9200/logs-*/_search?size=1` shows ECS fields
+- [x] `npm install pino pino-http`
+- [x] `backend/src/logger.ts` — ECS-aligned pino + pino-http wrapper, ECS root-level fields via `customProps` (not nested req/res), @timestamp via custom `timestamp` fn
+- [x] Wire `pinoHttp` middleware; skip /metrics and /healthz; replace `console.error` in error handler with structured `req.log.error`
+- [x] Event logs in payment.ts (`payment recorded`), checkout.ts (`order created`), auth.ts (`login succeeded`)
+- [x] `elasticsearch:9.4.1` + `kibana:9.4.1` + `filebeat:9.4.1` services in compose; ES heap pinned 1G; security off; healthcheck via bash /dev/tcp probe
+- [x] `filebeat/filebeat.yml` with `filestream` input + container + ndjson parsers, docker autodiscover, ECS-friendly drop_fields
+- [x] **Verify PASSED**: 42 docs indexed; `payment recorded` events carry full `ecom.{order_id, payment_status, payment_amount_cents}`; `url.path` flat at root using Express `originalUrl`; log.level distribution shows info+warn split correctly.
 - [ ] Commit: `feat: structured logging via pino + filebeat -> elasticsearch`
 
 ## Block 4 — Grafana + dashboard (25 min)

@@ -1,0 +1,74 @@
+# Filebeat config — see guidelines.md §1 / "log shipping".
+#
+# Pipeline:
+#   shop-backend (Node)  ──stdout──►  Docker JSON-file driver  ──tails──►
+#   Filebeat container/ndjson parsers  ──ships──►  Elasticsearch
+#
+# What the parsers do:
+#   - `container` strips Docker's per-line {log, stream, time} envelope, leaving
+#     the raw application log string as the new message.
+#   - `ndjson` parses that string as JSON and lifts the fields to root
+#     (overwrite_keys=true so our @timestamp wins; expand_keys=true so dotted
+#     keys like "log.level" become nested {log:{level:...}} for ECS).
+#
+# Output: writes to a single index `logs-app.ecom-dev`. We disable ILM/template
+# setup for the demo (ES auto-creates a sane mapping on first write).
+
+filebeat.autodiscover:
+  providers:
+    - type: docker
+      hints.enabled: false
+      templates:
+        - condition:
+            contains:
+              docker.container.name: shop-backend
+          config:
+            - type: filestream
+              # filestream needs a unique id per input. The container id makes
+              # it stable across container recreations of the same name.
+              id: shop-backend-${data.docker.container.id}
+              paths:
+                - /var/lib/docker/containers/${data.docker.container.id}/*.log
+              parsers:
+                - container:
+                    format: docker
+                    stream: all
+                - ndjson:
+                    target: ""              # lift fields to root
+                    overwrite_keys: true    # let our @timestamp win
+                    expand_keys: true       # "log.level" -> {log:{level:...}}
+                    add_error_key: true
+              # Filestream input requires prospector.scanner.symlinks=true to
+              # work with Docker's container-log symlink layout on some
+              # platforms — harmless to enable always.
+              prospector.scanner.symlinks: true
+
+# Keep the indexed document tight: drop noisy Filebeat-added fields that the
+# AI agent and dashboards don't need. ECS top-level fields (log, http, url,
+# event, trace, user, service, ecom) are preserved.
+processors:
+  - drop_fields:
+      fields:
+        - agent
+        - ecs.version
+        - input
+        - log.file
+        - log.offset
+        - stream
+        - container
+        - docker        # Compose labels are noisy in every record; container.id stays
+        - host.name     # redundant with service.name for our purposes
+      ignore_missing: true
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  index: "logs-app.ecom-dev"
+  allow_older_versions: true
+
+# Disable ILM + index-template setup — ES auto-creates a permissive mapping on
+# first write, which is what we want for the demo. ILM in a single-node
+# zero-retention setup adds setup complexity with no benefit.
+setup.ilm.enabled: false
+setup.template.enabled: false
+
+logging.level: info

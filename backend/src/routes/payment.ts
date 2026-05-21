@@ -69,6 +69,20 @@ router.post(
     ecomPaymentsTotal.inc({ outcome: status, provider });
     ecomPaymentAmountCentsTotal.inc({ provider, outcome: status }, totalCents);
 
+    // Structured business event — searchable in ES by ecom.order_id /
+    // ecom.payment_status. Level promoted by pino-http's customLogLevel when
+    // the HttpError below sets a 4xx status; success path stays info.
+    req.log.info(
+      {
+        ecom: {
+          order_id: String(orderId),
+          payment_status: status,
+          payment_amount_cents: totalCents,
+        },
+      },
+      'payment recorded'
+    );
+
     if (failed) {
       throw new HttpError(402, 'payment_declined', 'mock provider declined the charge');
     }

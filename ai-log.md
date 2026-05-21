@@ -65,7 +65,22 @@ This is the kind of detail the assignment grades as "AI-gap awareness": an LLM t
 **Verify**: 4 services healthy (`mysql`, `backend`, `frontend`, `prometheus`); `/metrics` exposes every catalog metric with non-zero values after a single user-journey drive; Prometheus target `shop-backend` shows `up`; PromQL `sum by (route)(rate(http_requests_total[1m]))` returns labeled series per route.
 
 ### Block 3 — Logs
-_(TBD)_
+
+**Stack**: `pino@10` + `pino-http@11` writing to stdout; **`filebeat:9.4.1`** with `filestream` input (autodiscover on `shop-backend` container); **`elasticsearch:9.4.1`** + **`kibana:9.4.1`** single-node, security disabled. Field schema ECS-aligned (@timestamp, log.level, service.*, http.*, url.path, event.{duration,outcome}, trace.id, user.id, ecom.*).
+
+**Manual fix #4 (pino base option misread):** Initially set `base: undefined` to suppress pino's default `{pid, hostname}` AND also added a `bindings(bindings) { ... bindings.pid }` formatter. The two combined meant `bindings` was called with `{}`, and reading `.pid` from undefined crashed the container at startup. Fixed by removing the `process: { pid }` field from `bindings()` — `base: undefined` already does what I wanted.
+
+**Manual fix #5 (Elasticsearch 9.x healthcheck):** My compose healthcheck used `wget --spider` because the research-agent report said the ES image strips curl. Turns out ES 9.4.1 strips **both** curl and wget. ES was reporting `_cluster/health: green` from inside the container, but Docker marked the container `unhealthy` and downstream services (Filebeat, Kibana) refused to start. Fixed by using bash's built-in `/dev/tcp` probe in CMD-SHELL — no external binary required.
+
+**Manual fix #6 (Filebeat command syntax):** First `command: ["-e", "-strict.perms=false"]` made Filebeat print its help text and exit 1, because the image ENTRYPOINT is `filebeat` (not a wrapper) and the args bypass it. Right form: `["filebeat", "-e", "--strict.perms=false"]` with proper long-flag prefix.
+
+**Manual fix #7 (Filebeat container input deprecated):** First config used `type: container` per the research-agent report. Filebeat 9.x has fully deprecated that input — replaced with `type: filestream` + the existing `container` parser. Filebeat helpfully told me the path of least resistance in its first error message; took one config edit. Also added `id: shop-backend-${data.docker.container.id}` because filestream requires a unique id per input.
+
+**Manual fix #8 (pino-http req/res serializers don't promote to root):** Configured `serializers: { req: ..., res: ... }` to reshape into ECS, but pino-http keeps serializer output **under the key name** (`req: {...}`, `res: {...}`) — so my fields landed at `req.url.path`, not `url.path`. Fixed by switching to `customProps` (which merges into the record root) and returning `undefined` from `req`/`res` serializers to suppress the nested versions entirely.
+
+**Manual fix #9 (url.path used router-local Express URL):** First indexed docs showed `url.path: "/login"` for failed-login requests and `url.path: "/1/related"` for the related-products call — because Express's `req.url` is router-local. Same root cause as the metrics-middleware baseUrl bug from Block 2. Fixed by preferring `req.originalUrl` over `req.url` in `customProps`.
+
+**Verify**: 42 docs indexed across an info/warn level split. ES auto-created data stream `.ds-logs-app.ecom-dev-*`. All four business events (`payment recorded`, `order created`, `login succeeded`, `handled error: <code>`) have full `ecom.*` payloads. `url.path`, `http.request.method`, `http.response.status_code`, `event.duration`, `event.outcome`, `trace.id` all at ECS-canonical root paths. The AI agent can search by `ecom.error_code:payment_declined`, `url.path:/api/payment`, `log.level:error`, etc.
 
 ### Block 4 — Grafana
 _(TBD)_
