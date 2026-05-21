@@ -10,7 +10,7 @@
 
 You are a Site Reliability Engineer joining a project — a Node.js + Express + React eCommerce app that is deliberately uninstrumented. Your job is to add the observability layer (Prometheus metrics, structured logs to Elasticsearch, Grafana with provisioned dashboards) and stand up a standalone AI observability service that investigates the running system via multi-turn LLM tool calls.
 
-The work is graded on whether an on-call engineer (and an LLM) can use what you build to reason about a live system — not on whether you wired up every default exporter.
+The work succeeds if an on-call engineer (and an LLM) can use what you build to reason about a live system — not on wiring up every default exporter.
 
 ## Read these first
 
@@ -44,7 +44,7 @@ If you can't reconcile what these three files say, ask before writing code. Don'
 
 ### Intentional behaviors worth instrumenting
 
-These are gifts from the assignment authors — instrument them deliberately, don't just rely on defaults.
+These are deliberate behaviors in the starter app — instrument them on purpose, don't just rely on defaults.
 
 - **`GET /api/products/:id/related`** runs an un-indexed self-join across `order_items`. Latency grows with order volume. Wrap it with a named DB-query histogram (`db_query_duration_seconds{query_name="products_related"}`).
 - **Payment latency is uniform in `[120 ms, 450 ms]`.** A p95 histogram panel shows this clearly; a p50 panel won't. The difference matters.
@@ -332,7 +332,7 @@ If that returns a coherent narrative, you're done.
 - **Never** label metrics with `user_id`, `order_id`, `payment_id`, `request_id`, `trace_id`, raw URL paths, error messages, SKUs, or emails. The full forbidden list is in `guidelines.md` §2.
 - **Never** use `:latest` image tags. Pin every image to a specific version.
 - If a build fails, read the error and fix the root cause. Don't `--no-verify` or skip hooks.
-- Don't modify anything in `frontend/`. The assignment is explicit that polishing the app isn't the point.
+- Don't modify anything in `frontend/`. Polishing the app isn't the point.
 - Don't invent metric names. If a metric you want isn't in the catalog, add it to the catalog first in the same commit (description + why it matters + normal + change implies).
 - If you find yourself prompting the LLM through five attempts to do the same thing, stop, write the code yourself, and add an entry to `ai-log.md` describing what the LLM couldn't do. Honest manual-fix logs are part of the deliverable.
 

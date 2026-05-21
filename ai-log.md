@@ -1,13 +1,13 @@
 # AI Log
 
-An honest record of which LLMs were used during this assignment, for what, and where they fell short. The assignment explicitly grades "AI-gap awareness — tell us honestly where you stopped prompting and fixed by hand," so this file is part of the deliverable.
+An honest record of which LLMs were used, for what, and where they fell short. The deliverable asks for this explicitly: "tell us honestly where you stopped prompting and fixed by hand."
 
 ## Models used
 
 | Phase | Model | Provider | Why |
 |---|---|---|---|
 | Build (this repo) | Claude Code with `claude-opus-4-7[1m]` | Anthropic API via Claude Code CLI | Best agentic build quality available in May 2026. Multi-file refactor with iterative verification fits Opus 4.7's strengths. |
-| Runtime observability agent | `anthropic/claude-sonnet-4.6` | OpenRouter, using the key Helfy provided | Best price/quality on OpenRouter's tool-calling collection rankings for 5–10-turn agent loops as of May 2026. Strong narrative output, which is what the assignment grades. |
+| Runtime observability agent | `anthropic/claude-sonnet-4.6` | OpenRouter, using the key Helfy provided | Best price/quality on OpenRouter's tool-calling collection rankings for 5–10-turn agent loops as of May 2026. Strong narrative output. |
 | Fallback if rate-limited | `anthropic/claude-haiku-4.5` | OpenRouter | Cheaper and faster per turn. Would be logged here if triggered. Wasn't. |
 
 The Cline VS Code extension was not used during the build. The OpenRouter key Helfy provided lives in `.env` and is consumed only by the AI observability service at runtime — its natural place in the architecture.
@@ -22,7 +22,7 @@ Build-phase tools were Claude Code's built-ins (Read, Edit, Write, Bash, plus th
 
 Worked in place at `/Users/matan.weisz/git/sre-assignment/` rather than a sibling directory. Original assignment material (PDF, email, zip) stays locally but is `.gitignore`-d from the published repo. `sre-store/` is kept as a pristine reference until the build is done.
 
-**Manual fix #1 — `osxkeychain` credsStore leftover.** Docker config had `"credsStore": "osxkeychain"` left over from a prior Docker Desktop install. That binary isn't on Rancher Desktop's PATH, so the first `docker compose up` failed at image pull. Removed the line from `~/.docker/config.json` (backup saved). Public Docker Hub images don't need a credential helper. Not an LLM failure — environment issue — but logged because the assignment asks for honesty about manual fixes.
+**Manual fix #1 — `osxkeychain` credsStore leftover.** Docker config had `"credsStore": "osxkeychain"` left over from a prior Docker Desktop install. That binary isn't on Rancher Desktop's PATH, so the first `docker compose up` failed at image pull. Removed the line from `~/.docker/config.json` (backup saved). Public Docker Hub images don't need a credential helper. Not an LLM failure — environment issue — but logged for completeness.
 
 Verified the baseline app worked end-to-end via curl before changing anything: login → cart → checkout → payment → frontend HTTP 200. App is uninstrumented as advertised. Ready for Block 1.
 
@@ -31,7 +31,7 @@ Verified the baseline app worked end-to-end via curl before changing anything: l
 Three files authored by Claude Code (Opus 4.7), in this order: catalog → guidelines → initial.md. The catalog is the contract everything else must match, so it goes first.
 
 - **`metric-catalog.md`** — every metric and log field with description, why it matters, normal range, and what a change implies. Followed the "strong vs weak" pattern: every entry explains what a change *means*, not just what the metric measures. Forbidden-label list is explicit, funnel queries enumerated at the bottom.
-- **`guidelines.md`** — log format, metric naming, error-surfacing rules, plus the reusable procedures (the part the PDF says "matters most"). The triage loop is §6, with a worked example.
+- **`guidelines.md`** — log format, metric naming, error-surfacing rules, plus the reusable procedures section. The triage loop is §6, with a worked example.
 - **`initial.md`** — bootstrap prompt with five phases, each with explicit verify gates. Encodes the SRE system prompt verbatim so the runtime agent and the build-time instructions stay aligned.
 
 Verified consistency via regex cross-check: every metric name in `initial.md` is documented in `metric-catalog.md`. No manual fixes — Blueprint writing was straightforward synthesis from the planning-phase research.
@@ -109,7 +109,7 @@ The agent loop in `app.py:investigate` is short on purpose: max 10 iterations, 8
 
 > *"Zero series matched. Most likely a misspelled metric name — call get_metric_catalog."*
 
-After the hint, the model pivoted cleanly: searched logs → queried with the wrong name → got the hint → called the catalog → re-queried with the right name → wrapped up. That's the "follow-up tool calls based on prior results, not a fixed sequence" criterion the assignment grades, earned by a single targeted tool-output change.
+After the hint, the model pivoted cleanly: searched logs → queried with the wrong name → got the hint → called the catalog → re-queried with the right name → wrapped up. That's "follow-up tool calls based on prior results, not a fixed sequence," earned by a single targeted tool-output change.
 
 ### Block 6 — End-to-end demo capture
 
@@ -172,8 +172,8 @@ Walking the published rubric against the current state, with concrete evidence:
 | **Observability design** — dashboards answer on-call questions | The User Journey dashboard's three rows match the on-call mental model: RED metrics for *is something wrong*, the funnel for *where in the user journey*, and a recent-errors log panel for *what specifically*. The `$route` variable scopes the RED panels for focused investigation. |
 | **Honesty & tradeoffs** — manual fixes documented, cardinality & cost articulated | This file lists twelve named manual fixes. The README's Tradeoffs section explicitly addresses cardinality (with arithmetic for current label dimensions), sampling (none, with the scale at which we'd start dropping 2xx GETs), log volume (single data stream, no ILM), MCP vs. native function calling, and model choice. |
 
-Honest gaps the reviewer might want to know:
+Honest gaps worth flagging:
 
 - No dashboard screenshot. The Grafana image-renderer plugin isn't included (it's a ~250 MB extra container), so `docs/dashboard-state.json` captures the panel values numerically instead.
 - No retroactive squash of commits. The per-block history reflects how the build actually went and is left intact.
-- The frontend wasn't touched, per the assignment's instruction not to polish the app.
+- The frontend wasn't touched — the brief is explicit that polishing the app isn't the point.

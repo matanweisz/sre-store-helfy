@@ -72,11 +72,11 @@ If you add a metric you MUST update the catalog in the same change — the AI ha
 ## Project-specific rules
 
 - **Cardinality is sacred.** Forbidden labels (per `guidelines.md` §2): `user_id`, `order_id`, `payment_id`, `cart_id`, `request_id`, `trace_id`, raw URL paths, free-text error messages, SKUs, emails, IPs. Use logs for per-entity drill-down.
-- **Don't touch `frontend/`.** The assignment PDF explicitly says polishing the app is not the point.
+- **Don't touch `frontend/`.** Polishing the app isn't the point of this project.
 - **`sre-store/` is read-only reference.** It's the pristine pre-instrumentation copy and gitignored — don't edit, don't commit changes inside it.
 - **Pin all image tags.** No `:latest`. Current pins: prometheus `v3.6.0`, ES/Kibana/Filebeat `9.4.1`, Grafana `11.4.0`, MySQL `8.4`.
 - **Don't invent metric or log-field names.** If a name isn't in `metric-catalog.md`, add it to the catalog in the same commit (description + why + normal + change implies).
-- **The Blueprint files are graded artifacts.** `metric-catalog.md`, `guidelines.md`, `initial.md` are not just docs — re-running `initial.md` against a fresh checkout of `sre-store/` should reproduce the stack. Keep them in sync with the code.
+- **The Blueprint files are first-class artifacts.** `metric-catalog.md`, `guidelines.md`, `initial.md` are not just docs — re-running `initial.md` against a fresh checkout of `sre-store/` should reproduce the stack. Keep them in sync with the code.
 
 ## Environment / Rancher Desktop gotchas
 

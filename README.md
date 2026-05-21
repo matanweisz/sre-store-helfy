@@ -4,7 +4,7 @@
 
 A Node.js + Express + React eCommerce app, instrumented from scratch, with an observability stack (Prometheus, Elasticsearch + Filebeat, Grafana) and a Python AI service that investigates the live system over multi-turn LLM tool calls.
 
-The goal of the assignment isn't a polished app. It's an observability foundation an AI agent can actually reason about: signals named meaningfully, a catalog the LLM can read at runtime, and a triage procedure the agent follows step by step.
+The goal here isn't a polished app. It's an observability foundation an AI agent can actually reason about: signals named meaningfully, a catalog the LLM can read at runtime, and a triage procedure the agent follows step by step.
 
 ## Architecture
 
@@ -119,7 +119,57 @@ Within a minute of the failure-rate bump, the Grafana *Payment failure rate* pan
 
 ---
 
-> The build was done with Claude Code (Opus 4.7) directed by me block by block. The runtime AI agent uses `anthropic/claude-sonnet-4.6` via the OpenRouter key Helfy provided. Full breakdown in [`ai-log.md`](./ai-log.md).
+## How this was built — Claude Code as a force multiplier
+
+The assignment says *"show us how you lead the machine to see a system, not just how you build one."* This section is that.
+
+### The two LLMs and what each one does
+
+| Where | Model | What for |
+|---|---|---|
+| **Build time** (this session) | `claude-opus-4-7[1m]` via **Claude Code** (CLI) | Writing code and configs across multiple files, planning, reviewing, verifying each step against a running stack |
+| **Runtime** (the deliverable) | `anthropic/claude-sonnet-4.6` via **OpenRouter** | The AI observability service — investigates the live Prometheus + Elasticsearch with multi-turn tool calls |
+
+I used Claude Code as a pair-programmer with a tight feedback loop, not as a one-shot code generator. The OpenRouter key Helfy provided is consumed only at runtime, by the deliverable.
+
+### How I led Claude Code
+
+I worked in **eight discrete blocks** (one commit per block — see `git log --oneline`). Each block looked the same:
+
+1. **Plan the block before writing any code.** I used Claude Code's plan mode to describe what I wanted (e.g. "instrument the backend with prom-client per `metric-catalog.md`, add a Prometheus service, verify with these `curl`s"). The model produced a step-by-step plan that I reviewed and approved before any file was touched.
+2. **Execute against an explicit verify gate.** Every block had a *concrete* end condition — usually a `curl` against the running stack that had to return the expected shape. I didn't move to the next block until that gate passed.
+3. **Capture every manual fix honestly.** When Claude Code produced something that didn't work — like the Express `req.baseUrl` middleware that mislabeled error-path requests — I logged the diagnosis and the fix into [`ai-log.md`](./ai-log.md) before moving on. Twelve such fixes are recorded.
+
+### What Claude Code's built-in tools did, concretely
+
+- **Read / Edit / Write** for all file operations. No external editors.
+- **Bash** for running the stack, driving `curl` verifications, and checking `git status` between commits.
+- **The Explore and general-purpose sub-agents** for parallel research during planning — I sent four independent research queries in one message (Prometheus best practices, Filebeat/ECS, LLM tool-calling patterns, Grafana provisioning) and they came back concurrently. That's how I built the four-research-report foundation in under 15 minutes.
+- **AskUserQuestion** at decision points where I needed your input (language choice for the AI service, primary LLM, GitHub vs. email submission).
+- **Plan mode (`ExitPlanMode`)** at the top of each major block, so we agreed on what was being done before any change landed.
+- **Todo tracking (`TaskCreate`/`TaskUpdate`)** to keep the eight-block structure visible as we worked.
+
+A **project-scoped memory file** ([`CLAUDE.md`](./CLAUDE.md) at the repo root) captures the architectural decisions and load-bearing comments that future Claude Code sessions need to know about — for example, *don't "fix" the bash `/dev/tcp` healthcheck because ES 9.x strips both `curl` and `wget`*. It's how I made the project re-resumable.
+
+### MCP servers and plugins
+
+**None at runtime.** The AI observability service uses **native OpenAI-compatible function calling** (not MCP) because the four tools live in the same Python process as the LLM client — MCP would add a JSON-RPC layer with no behavioral change. MCP becomes the right answer once these tools need to be reused across multiple agents (a Claude Desktop on-call integration is the obvious case); documented as the natural upgrade path in `ai-service/ai_service/{app,tools}.py`.
+
+At build time, Claude Code's own built-in tools were enough. No third-party MCP servers were used.
+
+### Where Claude Code fell short
+
+The honest list is in [`ai-log.md`](./ai-log.md). The pattern of mistakes Opus 4.7 made under my direction:
+
+- **Subtle framework timing.** The Express `req.baseUrl`-on-error-path bug and the `req.url` vs. `req.originalUrl` bug are the same shape: confidently-written code that looks right but doesn't survive the error path. The first one took three iterations to diagnose because each "obvious" hook had its own timing failure.
+- **Out-of-date library knowledge.** The planning-phase research correctly named Filebeat 9.4 and ES 9.4 but missed that 9.x deprecated `container` input and stripped `wget` from the base image. The LLM didn't know what it didn't know; Filebeat and Docker's healthcheck told me directly on first start.
+- **Naive API shapes.** pino-http puts custom-serializer output under the key name (so my fields landed at `req.url.path` instead of `url.path`). pino's `bindings()` formatter is incompatible with `base: undefined` if you read `bindings.pid` inside it. Both surfaced only on first boot.
+
+All caught at the verify gate of the block where they happened. None leaked across block boundaries.
+
+---
+
+> Tooling at a glance: **Claude Code (Opus 4.7)** at build time, directed by me block by block; **`anthropic/claude-sonnet-4.6`** via OpenRouter at runtime for the live observability agent. Full breakdown including all manual fixes in [`ai-log.md`](./ai-log.md).
 
 ## Observability Stack
 
@@ -317,7 +367,7 @@ The full record is in [`ai-log.md`](./ai-log.md). The honest summary:
 - *ES 9.x strips both `curl` AND `wget`.* My initial `wget --spider` healthcheck silently failed and ES looked unhealthy from outside, even though it was green inside. Switched to a bash `/dev/tcp` probe.
 - *pino-http serializers put fields under the key name.* My first run indexed `req.url.path` instead of `url.path`. Fixed by using `customProps` (which merges into the record root) and suppressing the serializers.
 - *`req.url` is router-local; `req.originalUrl` is the full path.* Same family as the baseUrl bug. The logger had to switch.
-- *Environment leftovers, not LLM mistakes:* a stale `osxkeychain` credsStore from Docker Desktop, and zoxide overriding `cd` in the shell snapshot. Both fixed via system config. Worth listing because the assignment asks for honesty.
+- *Environment leftovers, not LLM mistakes:* a stale `osxkeychain` credsStore from Docker Desktop, and zoxide overriding `cd` in the shell snapshot. Both fixed via system config. Listed here for honesty.
 
 **At runtime** (the AI agent investigating live):
 
@@ -334,7 +384,7 @@ The full record is in [`ai-log.md`](./ai-log.md). The honest summary:
 
 **MCP vs. native function calling.** Native. The four tools live in the same process as the LLM client, so MCP's JSON-RPC layer would add complexity without changing behavior. MCP becomes the right answer when the same tools need to be reused across multiple agents.
 
-**LLM choice.** `anthropic/claude-sonnet-4.6` via OpenRouter. The best price/quality on OpenRouter's tool-calling collection rankings as of May 2026 for 5–10-turn agent loops. Haiku 4.5 and Gemini Flash work for the loop mechanics but produce flatter narratives — and "insight, not numbers" is what gets graded. Opus 4.7 (via Claude Code) was only used at build time, never at runtime.
+**LLM choice.** `anthropic/claude-sonnet-4.6` via OpenRouter. The best price/quality on OpenRouter's tool-calling collection rankings as of May 2026 for 5–10-turn agent loops. Haiku 4.5 and Gemini Flash work for the loop mechanics but produce flatter narratives — and "insight, not numbers" is what matters here. Opus 4.7 (via Claude Code) was only used at build time, never at runtime.
 
 ## Reproducing this Build
 
