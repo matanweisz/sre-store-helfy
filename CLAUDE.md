@@ -12,7 +12,7 @@ The build was driven by three **blueprint** docs at the repo root that are the c
 - `guidelines.md` — log format, metric naming, cardinality rules, the **triage loop** (§6) the runtime LLM follows. The triage loop is the most important part of this file.
 - `initial.md` — the bootstrap prompt that produced the stack; five phases with hard verify gates.
 
-`progress.md` tracks build state; `ai-log.md` is the honest record of LLM usage and manual fixes. `sre-store/` is the pristine pre-instrumentation reference — gitignored, do not edit.
+`ai-log.md` is the honest record of LLM usage and manual fixes. `sre-store/` is the pristine pre-instrumentation reference — gitignored, do not edit.
 
 **Quick orientation:** `git log --oneline` gives one commit per block (chore: baseline → blueprint → prom-client → pino+filebeat → grafana → AI service → docs+investigation). Each commit message documents what was added, why, and any manual fixes during that block.
 

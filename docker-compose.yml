@@ -38,19 +38,27 @@ services:
     ports:
       - "4000:4000"
     networks: [shop]
-    # Explicit json-file driver so Filebeat's container parser can read the
-    # wrapped JSON envelope. Without this, Rancher Desktop sometimes defaults
-    # to a driver Filebeat can't tail.
+    # Without an explicit json-file driver, Rancher Desktop sometimes uses a
+    # driver Filebeat can't tail.
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+    # The node:20-slim image has neither curl nor wget, so we probe with node itself.
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://localhost:4000/healthz', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   frontend:
     build: ./frontend
     container_name: shop-frontend
-    depends_on: [backend]
+    depends_on:
+      backend:
+        condition: service_healthy
     ports:
       - "5173:5173"
     networks: [shop]
@@ -70,7 +78,9 @@ services:
     ports:
       - "9090:9090"
     networks: [shop]
-    depends_on: [backend]
+    depends_on:
+      backend:
+        condition: service_healthy
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.4.1
@@ -89,10 +99,8 @@ services:
     ports:
       - "9200:9200"
     networks: [shop]
+    # ES 9.x slim image strips curl AND wget — probe via bash's /dev/tcp.
     healthcheck:
-      # ES 9.x slim image ships without curl OR wget. Use bash's built-in
-      # /dev/tcp probe to check the port is accepting connections — that's
-      # sufficient as a "ready" signal since by then the HTTP layer is up.
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9200 && echo -e 'GET /_cluster/health HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | grep -E '\"status\":\"(yellow|green)\"' || exit 1"]
       interval: 10s
       timeout: 5s
@@ -115,11 +123,8 @@ services:
   filebeat:
     image: docker.elastic.co/beats/filebeat:9.4.1
     container_name: shop-filebeat
-    # filebeat needs to read the docker socket and the per-container log files.
-    # Running as root is the Filebeat-supported way to access /var/lib/docker.
-    user: root
-    # The image's ENTRYPOINT is `filebeat` (no args). We append flags after the
-    # implicit `filebeat` command. Long-form flags need `--`.
+    user: root  # needed to read /var/lib/docker
+    # Image ENTRYPOINT is `filebeat`; the subcommand must be explicit.
     command: ["filebeat", "-e", "--strict.perms=false"]
     volumes:
       - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
@@ -130,7 +135,7 @@ services:
       elasticsearch:
         condition: service_healthy
       backend:
-        condition: service_started
+        condition: service_healthy
     networks: [shop]
 
   grafana:
@@ -140,14 +145,11 @@ services:
       - prometheus
       - elasticsearch
     environment:
-      # Anonymous admin so the reviewer (and the AI agent if we ever want it
-      # to hit Grafana) lands directly on the dashboard with no login. NOT for
-      # production — fine for the demo.
+      # Anonymous admin opens the dashboard with no login. Demo-only.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_SECURITY_ALLOW_EMBEDDING: "true"
-      # Disable the "what's new" / news feeds that clutter a demo dashboard.
       GF_NEWS_NEWS_FEED_ENABLED: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
@@ -168,8 +170,6 @@ services:
       prometheus:
         condition: service_started
     environment:
-      # OpenRouter key resolved from .env at the repo root via docker compose's
-      # default env-file lookup.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-sonnet-4.6}
       OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
@@ -178,8 +178,7 @@ services:
       METRIC_CATALOG_PATH: /app/metric-catalog.md
       MAX_AGENT_ITERATIONS: "10"
       TOOL_RESULT_CAP_CHARS: "8000"
-    # Mount the catalog read-only so the AI sees the same file the humans do —
-    # single source of truth.
+    # Catalog is mounted read-only so the AI sees the same file humans do.
     volumes:
       - ./metric-catalog.md:/app/metric-catalog.md:ro
     ports:

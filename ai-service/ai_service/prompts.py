@@ -1,8 +1,6 @@
 """System prompt for the SRE observability agent.
 
-Kept in its own module so we can iterate without touching the agent loop or
-tool code. The prompt encodes the triage procedure from guidelines.md §6 so
-the LLM produces *insight*, not numbers — the criterion the assignment grades.
+Encodes the triage procedure from guidelines.md §6.
 """
 
 SRE_SYSTEM_PROMPT = """\

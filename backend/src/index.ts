@@ -17,23 +17,18 @@ app.use(cors());
 app.use(express.json());
 
 // /metrics is registered BEFORE the metrics middleware so the scrape endpoint
-// itself is not labeled into our histograms (which would pollute p95 with the
-// time Prom takes to render the response). It's also skipped by the logger
-// further down to keep scrape noise out of the log stream.
+// isn't labeled into its own histograms.
 app.get('/metrics', async (_req, res) => {
   res.set('Content-Type', register.contentType);
   res.end(await register.metrics());
 });
 
-// HTTP request logging — installed BEFORE the metrics middleware so every
-// downstream handler has req.log (with trace.id) available. We skip /healthz
-// and /metrics manually here (pino-http has no built-in exclude list).
+// Skip /healthz and /metrics so they don't pollute the log stream or histograms.
 app.use((req, res, next) => {
   if (req.path === '/healthz' || req.path === '/metrics') return next();
   return httpLogger(req, res, next);
 });
 
-// All non-skipped requests pass through the metrics middleware.
 app.use(metricsMiddleware);
 
 app.get('/healthz', (_req, res) => {
@@ -53,13 +48,9 @@ app.use((req: Request, res: Response) => {
 
 app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof HttpError) {
-    // 4xx/5xx are already auto-logged by pino-http customLogLevel based on
-    // res.statusCode. We attach the structured error_code so a single log
-    // record carries both the HTTP shape and the business error code.
-    req.log?.warn?.(
-      { ecom: { error_code: err.code } },
-      `handled error: ${err.code}`
-    );
+    // pino-http already auto-logged the request at warn/error level; this adds
+    // the structured error_code alongside.
+    req.log?.warn?.({ ecom: { error_code: err.code } }, `handled error: ${err.code}`);
     res.status(err.status).json({ error: err.code, message: err.message });
     return;
   }

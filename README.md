@@ -74,40 +74,50 @@ docker compose up --build -d
 
 ### Drive the canonical demo
 
+The AI investigation can take 15–45 seconds (Sonnet 4.6, 5–10 tool calls). To see what the agent is doing while it works, tail the service logs in a second terminal:
+
 ```bash
-# Wave 1 — normal traffic, default 8% payment failure rate
+# Terminal 1 — watch the agent's progress in real time
+docker compose logs -f ai-service
+```
+
+```bash
+# Terminal 2 — drive traffic and ask
 ./scripts/drive-traffic.sh 20
 
-# Wave 2 — bump failures and drive again so the AI has something to find
+# Bump the failure rate so the AI has something to find
 docker compose stop backend
 PAYMENT_FAILURE_RATE=0.5 docker compose up -d backend
 ./scripts/drive-traffic.sh 20
 
-# Wait for Prometheus to scrape and Filebeat to ship
+# Wait a moment for Prometheus to scrape and Filebeat to ship
 sleep 15
 
-# Ask the AI
+# Ask the AI — terminal 1 will show iter-by-iter progress while this runs
+echo "⏳ investigating (15-45s)..."
 curl -s -X POST localhost:8000/investigate \
   -H 'content-type: application/json' \
   -d '{"question":"anything wrong with payments in the last 15 minutes?"}' | jq .
 
-# Or via the CLI
+# Or via the CLI (prints the same progress, then the JSON result)
 docker compose exec ai-service python -m ai_service.app "anything wrong with payments?"
 ```
 
-Within a minute of wave 2, the Grafana *Payment failure rate* panel goes red and the *Recent error logs* row fills with `ecom.error_code:payment_declined` events. A transcript from this exact run is below in [Sample AI Investigation](#sample-ai-investigation).
+Terminal 1 will show lines like:
+
+```
+[ai] ▶ investigating: anything wrong with payments in the last 15 minutes?
+[ai] iter 0  → query_prometheus(promql=sum(rate(ecom_payments_total{outcome="failed"}[5m]))/..., time_range=15m)  (5 ms)
+[ai] iter 0  → query_prometheus(promql=histogram_quantile(0.95, sum by (le)(rate(...))), time_range=15m)  (4 ms)
+[ai] iter 1  → get_metric_catalog()  (1 ms)
+[ai] iter 1  → get_recent_errors(route=/api/payment, time_range=15m)  (15 ms)
+[ai] iter 2  → query_prometheus(...)  (4 ms)
+[ai] ✔ done — 3 iters, 7 tool calls, 21845 ms
+```
+
+Within a minute of the failure-rate bump, the Grafana *Payment failure rate* panel goes red and the *Recent error logs* row fills with `ecom.error_code:payment_declined` events. A captured transcript from this exact run is below in [Sample AI Investigation](#sample-ai-investigation).
 
 ---
-
-## Contents
-
-- [Observability Stack](#observability-stack) — what's instrumented and why
-- [AI Service](#ai-service) — agent loop, the four tools, system prompt
-- [Dashboard Walkthrough](#dashboard-walkthrough) — what each panel is for
-- [Sample AI Investigation](#sample-ai-investigation) — a real captured run
-- [AI-Gap Awareness](#ai-gap-awareness) — where the AI fell short and I stepped in
-- [Tradeoffs](#tradeoffs) — cardinality, sampling, log volume, MCP, model choice
-- [Reproducing this Build](#reproducing-this-build) — the Blueprint trio
 
 > The build was done with Claude Code (Opus 4.7) directed by me block by block. The runtime AI agent uses `anthropic/claude-sonnet-4.6` via the OpenRouter key Helfy provided. Full breakdown in [`ai-log.md`](./ai-log.md).
 
@@ -238,20 +248,21 @@ Full prompt in [`ai-service/ai_service/prompts.py`](./ai-service/ai_service/prom
 
 The layout follows what an on-call engineer actually does: row 1 says *if* something's wrong, row 2 says *where in the user journey*, row 3 says *what specifically*. A `$route` variable scopes the RED panels to one endpoint when you want to focus.
 
-Snapshot from the canonical demo run, taken immediately before the AI investigation below (full panel data in [`docs/dashboard-state.json`](./docs/dashboard-state.json)):
+Snapshot from a live demo run, captured the moment before the AI investigation below (full panel data in [`docs/dashboard-state.json`](./docs/dashboard-state.json)):
 
 ```
 Error rate 5xx           0.00 %        # internal stack healthy
-Payment failure rate    37.9 %         # baseline is 8% — that's the canary
-Payments succeeded/min   3.81
-Checkouts succeeded/min  6.35
+Payment failure rate    40.0 %         # baseline is 8% — that's the canary
+Payments succeeded/min   3.11
+Checkouts succeeded/min  5.18
 
 Latency p95 by route
-  /api/payment/         477.7 ms       # at the catalog's 450ms ceiling
-  /api/cart/items        24.6 ms
+  /api/payment/         468.7 ms       # right at the 450 ms ceiling
+  /api/cart/items        23.8 ms
   /api/checkout/         23.8 ms
   /api/products/         23.8 ms
   /api/products/:id/related   23.8 ms  # slow query is fast on small data
+  /api/auth/login         90.0 ms      # bcrypt dominates this one
 ```
 
 That's the state the AI agent reasons about in the next section.
@@ -268,34 +279,32 @@ curl -X POST localhost:8000/investigate \
   -d '{"question":"Anything wrong with payments in the last 15 minutes? Walk me through your reasoning and give me a triage-style writeup with a concrete next action."}'
 ```
 
-**What the agent did** — 3 iterations, 7 tool calls, no fixed sequence:
+**What the agent did** — 4 iterations, 5 tool calls, ~42 seconds total, no fixed sequence:
 
 | # | Iter | Tool | What for | Latency |
 |---|---|---|---|---|
-| 1 | 0 | `query_prometheus` | failure-rate ratio | 6 ms |
-| 2 | 0 | `query_prometheus` | payment p95 latency | 5 ms |
-| 3 | 0 | `query_prometheus` | total payment request rate | 5 ms |
-| 4 | 1 | `get_metric_catalog` | confirm field names | 1 ms |
-| 5 | 1 | `get_recent_errors` | `/api/payment` breakdown | 15 ms |
-| 6 | 2 | `query_prometheus` | payment p95 re-check | 10 ms |
-| 7 | 2 | `query_prometheus` | DB `payment_record` p95 | 4 ms |
+| 1 | 0 | `get_metric_catalog` | ground field names | 1 ms |
+| 2 | 0 | `query_prometheus` | failure-rate ratio | 7 ms |
+| 3 | 1 | `query_prometheus` | p95 latency by route | 11 ms |
+| 4 | 1 | `get_recent_errors` | `/api/payment` breakdown | 13 ms |
+| 5 | 2 | `query_prometheus` | DB p95 by query_name | 8 ms |
 
-Iter 0 sends three Prometheus queries in parallel. Iter 1 consults the catalog before drilling in. Iter 2 grabs DB latency as negative evidence before concluding. The agent is picking its next move from what it just learned, not running a hardcoded script.
+The agent picks its next move from what it just learned: catalog first to confirm names, then the headline ratio, then the per-route latency picture, then the qualitative log breakdown, finally DB latency as negative evidence to rule out an internal cause. Iteration 3 is the conclusion turn — text only, no tools.
 
 **What it said:**
 
 > **🚨 Incident Note — Payment Failure Rate Critically Elevated**
 > *Window analyzed: last 15 minutes*
 >
-> **What is anomalous.** The payment failure rate has spiked dramatically above the 8% baseline. Over the last 15 minutes, the `ecom_payments_total{outcome="failed"}` ratio peaked at **67% and averaged ~44%** — roughly **5–8× the normal 8% baseline**. Every single failed payment carries the error code `payment_declined` (HTTP 402), meaning the mock-stripe provider is rejecting payments at a massively elevated rate. In the log sample, 19 of the 38 warn/error events in the window are `payment_declined` — a clean 50/50 split of success vs. failure, consistent with the metric.
+> **What is anomalous.** The payment failure rate is **~40–42%** — more than **5× the 8% baseline**. Roughly 4 in every 10 payment attempts are being declined by the mock-stripe provider right now. This is a direct revenue impact: a large fraction of users who reach the payment step are being turned away.
 >
-> **Supporting evidence.** Failure rate max 67%, mean ~44% vs. the 8% baseline. 100% of failures are `ecom.error_code: payment_declined` with HTTP 402. There are no `order_not_payable`, `invalid_input`, or 5xx errors — the payment route itself is healthy; the provider is declining. **DB query latency is flat and normal:** `db_query_duration_seconds{query_name="payment_record"}` p95 is ~24 ms, well within the 10–25 ms baseline. Our internal database is not the cause.
+> **Supporting evidence.** `ecom_payments_total` failure ratio: last value **0.40**, max **0.42** over the window. Baseline is 0.08. Not noise — sustained across the entire 15-minute window. Logs show a steady stream of `payment_declined` errors on `POST /api/payment`, returning HTTP 402. All 10 sampled warn-level events carry `ecom.error_code: payment_declined`; no other error codes are present. Clean declines from the provider, not crashes or timeouts.
 >
-> **Negative evidence (what rules out internal causes).** The DB `payment_record` query is perfectly healthy at ~24 ms. If this were a backend bug (broken payment logic, DB contention, code regression), we'd expect 5xx errors or elevated DB latency. We see neither. The failure mode is entirely at the **provider decision layer** — mock-stripe is declining cards, not our code failing to call it.
+> **Negative evidence (what rules out internal causes).** `/api/payment` p95 latency is **~469 ms** — essentially at the normal ~430 ms baseline. The provider is responding promptly; it's just saying "no" far more often. `db_query_duration_seconds` p95 for `payment_record` is **~24 ms**, well within the normal 10–25 ms range. Our database is healthy. `checkout_create_order` DB p95 is also flat at ~24 ms. All other routes show normal latency. The problem is isolated entirely to the payment provider decision layer.
 >
-> **Concrete next action.** The mock-stripe provider (`PAYMENT_FAILURE_RATE` env var) is almost certainly configured well above the default 8%. This is the exact failure mode the catalog calls out: *"`failed` rate climbing above ~10% → either someone bumped `PAYMENT_FAILURE_RATE`."* Check the env var on the backend container; if it's been bumped, reset to `0.08` and redeploy.
+> **Concrete next action.** Check the `PAYMENT_FAILURE_RATE` environment variable on the backend service immediately. It should be `0.08`; if someone bumped it (e.g., for a load test and forgot to revert), restart the service with the corrected value. If the env var is correct, treat this as a mock-stripe provider incident.
 
-Two things worth pointing out. The agent uses catalog metric names exactly as written (`db_query_duration_seconds{query_name="payment_record"}` — no typos, no guesses), and it quotes the catalog's own diagnostic guidance back at us. That's the catalog functioning as a runtime contract, not just docs.
+The agent uses catalog metric names exactly as written (`db_query_duration_seconds{query_name="payment_record"}`, `ecom.error_code: payment_declined`) and quotes the catalog's own diagnostic guidance back. The catalog is functioning as a runtime contract, not just documentation.
 
 ## AI-Gap Awareness
 
@@ -329,4 +338,4 @@ The full record is in [`ai-log.md`](./ai-log.md). The honest summary:
 
 ## Reproducing this Build
 
-The three Blueprint files at the repo root — [`initial.md`](./initial.md), [`guidelines.md`](./guidelines.md), [`metric-catalog.md`](./metric-catalog.md) — are the bootstrap contract. `initial.md` is a self-contained prompt for an agentic coding LLM; run against a fresh checkout of the provided app in `sre-store.zip`, it produces an equivalent working stack. The prompts and models I used during the build are in [`ai-log.md`](./ai-log.md).
+`initial.md` is a self-contained bootstrap prompt. Paste it into any agentic coding LLM with filesystem + shell access, against a fresh checkout of the starter app (`sre-store.zip`), and it produces an equivalent working stack. It references [`guidelines.md`](./guidelines.md) and [`metric-catalog.md`](./metric-catalog.md), and the prompts and models I used during the build are recorded in [`ai-log.md`](./ai-log.md).

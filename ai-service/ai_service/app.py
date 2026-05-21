@@ -1,24 +1,4 @@
-"""AI observability service.
-
-A standalone FastAPI app that runs a multi-turn LLM tool-calling loop against
-the live Prometheus + Elasticsearch stack. The LLM picks what to look at;
-this code executes the picks and feeds results back.
-
-Architecture:
-  POST /investigate {"question": "..."}
-    -> investigate(question) — agent loop, max 10 iterations
-       -> client.chat.completions.create(model, messages, tools, ...)
-          -> if message has tool_calls: execute each, append role=tool, loop
-          -> else (text-only response): return as insight
-
-CLI mode is available via `python -m ai_service.app "your question"`.
-
-Key choices documented in ai-log.md:
-  - openai SDK pointed at OpenRouter (OpenRouter is OpenAI-compatible).
-  - Native function calling, not MCP. Simpler for an in-process 4-tool set.
-  - Hard iter cap (10) + payload cap (8 KB per tool result) prevent runaway
-    loops from burning the OpenRouter budget.
-"""
+"""AI observability service — `POST /investigate` and a CLI."""
 
 from __future__ import annotations
 
@@ -37,44 +17,52 @@ from pydantic import BaseModel, Field
 from .prompts import SRE_SYSTEM_PROMPT
 from .tools import TOOL_REGISTRY, TOOLS
 
-# ─── logging ────────────────────────────────────────────────────────────────────
-
-# Service-emitted JSON logs to stderr so the CLI mode can pipe pure JSON to
-# stdout. Server mode (uvicorn) treats stderr the same as stdout for container
-# logging — Filebeat picks both up.
-logging.basicConfig(
-    level=logging.INFO,
-    stream=sys.stderr,
-    format='{"@timestamp":"%(asctime)s","log.level":"%(levelname)s","service":{"name":"ai-service"},"logger":"%(name)s","message":%(message)s}',
-)
-log = logging.getLogger("ai_service")
-
-
-def jlog(message: str, **fields: Any) -> None:
-    """Emit a structured log line with extra fields."""
-    payload = {"msg": message, **fields}
-    log.info(json.dumps(payload, default=str))
-
-
-# ─── env ────────────────────────────────────────────────────────────────────────
+# ─── env ───────────────────────────────────────────────────────────────────────
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.6")
 MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
 TOOL_RESULT_CAP_CHARS = int(os.environ.get("TOOL_RESULT_CAP_CHARS", "8000"))
-# Catalog is bigger than per-tool cap — allow more for that one tool.
 CATALOG_RESULT_CAP_CHARS = int(os.environ.get("CATALOG_RESULT_CAP_CHARS", "16000"))
 
+# ─── progress + logging ────────────────────────────────────────────────────────
+# Two surfaces: a one-line human-readable status to stderr (for `docker compose
+# logs -f ai-service` and CLI users), and a structured JSON record at debug
+# level for log aggregation. The structured record is only emitted when the
+# AI_STRUCTURED_LOGS env is set, so the default surface stays clean.
 
-# ─── OpenAI client (pointed at OpenRouter) ──────────────────────────────────────
+_quiet = False  # set by the CLI --quiet flag
+_emit_json = os.environ.get("AI_STRUCTURED_LOGS", "").lower() in ("1", "true", "yes")
 
-if not OPENROUTER_API_KEY:
-    jlog(
-        "OPENROUTER_API_KEY not set",
-        level="WARN",
-        hint="set it in .env before docker compose up",
-    )
+logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(message)s")
+_jlog = logging.getLogger("ai_service")
+
+
+def progress(line: str, **fields: Any) -> None:
+    """One-line human-readable status to stderr + optional structured JSON."""
+    if not _quiet:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    if _emit_json:
+        payload = {"@timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "msg": line, **fields}
+        _jlog.warning(json.dumps(payload, default=str))
+
+
+def _summarize_args(args: dict[str, Any], width: int = 80) -> str:
+    if not args:
+        return ""
+    parts = []
+    for k, v in args.items():
+        sv = str(v)
+        if len(sv) > 40:
+            sv = sv[:37] + "..."
+        parts.append(f"{k}={sv}")
+    out = ", ".join(parts)
+    return out if len(out) <= width else out[: width - 3] + "..."
+
+
+# ─── OpenAI client (pointed at OpenRouter) ─────────────────────────────────────
 
 _client: OpenAI | None = None
 
@@ -83,12 +71,8 @@ def get_client() -> OpenAI:
     global _client
     if _client is None:
         if not OPENROUTER_API_KEY:
-            raise HTTPException(
-                status_code=500,
-                detail="OPENROUTER_API_KEY env var is empty; cannot reach the LLM.",
-            )
-        # OpenRouter recommends sending these headers so usage shows up correctly
-        # under your account. They're optional but harmless.
+            raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY env var is empty")
+        # OpenRouter recommends sending Referer + X-Title so usage attribution works.
         _client = OpenAI(
             api_key=OPENROUTER_API_KEY,
             base_url=OPENROUTER_BASE_URL,
@@ -96,14 +80,13 @@ def get_client() -> OpenAI:
                 "HTTP-Referer": "https://github.com/matan-weisz/sre-assignment",
                 "X-Title": "SRE Assignment AI Observability",
             },
-            # We do our own retries / loop bounds; let httpx surface errors.
             timeout=httpx.Timeout(60.0, connect=10.0),
             max_retries=1,
         )
     return _client
 
 
-# ─── pydantic models ────────────────────────────────────────────────────────────
+# ─── models ────────────────────────────────────────────────────────────────────
 
 
 class InvestigateRequest(BaseModel):
@@ -126,12 +109,13 @@ class InvestigateResponse(BaseModel):
     trace: list[ToolCallTrace]
     iterations: int
     finish_reason: str  # "answer" | "iteration_cap" | "error"
+    elapsed_ms: int
 
 
-# ─── the agent loop ─────────────────────────────────────────────────────────────
+# ─── agent loop ────────────────────────────────────────────────────────────────
 
 
-def _truncate_tool_result(name: str, payload: str) -> tuple[str, bool]:
+def _truncate(name: str, payload: str) -> tuple[str, bool]:
     cap = CATALOG_RESULT_CAP_CHARS if name == "get_metric_catalog" else TOOL_RESULT_CAP_CHARS
     if len(payload) <= cap:
         return payload, False
@@ -145,13 +129,11 @@ def investigate(question: str) -> InvestigateResponse:
         {"role": "user", "content": question},
     ]
     trace: list[ToolCallTrace] = []
+    started = time.monotonic()
+
+    progress(f"[ai] ▶ investigating: {question[:80]}{'...' if len(question) > 80 else ''}")
 
     for iteration in range(MAX_AGENT_ITERATIONS):
-        jlog(
-            "agent iteration begin",
-            iteration=iteration,
-            messages_count=len(messages),
-        )
         try:
             resp = client.chat.completions.create(
                 model=OPENROUTER_MODEL,
@@ -161,7 +143,7 @@ def investigate(question: str) -> InvestigateResponse:
                 temperature=0.2,
             )
         except Exception as e:  # noqa: BLE001 — surface every LLM failure mode
-            jlog("LLM call failed", iteration=iteration, error=str(e))
+            progress(f"[ai] ✗ LLM call failed: {e}")
             return InvestigateResponse(
                 question=question,
                 model=OPENROUTER_MODEL,
@@ -169,11 +151,10 @@ def investigate(question: str) -> InvestigateResponse:
                 trace=trace,
                 iterations=iteration,
                 finish_reason="error",
+                elapsed_ms=int((time.monotonic() - started) * 1000),
             )
 
         msg = resp.choices[0].message
-        # Append the assistant message verbatim so subsequent tool roles can
-        # reference its tool_call_ids.
         assistant_dump: dict[str, Any] = {"role": "assistant"}
         if msg.content:
             assistant_dump["content"] = msg.content
@@ -182,23 +163,15 @@ def investigate(question: str) -> InvestigateResponse:
                 {
                     "id": tc.id,
                     "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
                 }
                 for tc in msg.tool_calls
             ]
         messages.append(assistant_dump)
 
-        # Termination: model produced a text-only response.
         if not msg.tool_calls:
-            jlog(
-                "agent finished",
-                iteration=iteration,
-                finish_reason="answer",
-                content_length=len(msg.content or ""),
-            )
+            elapsed = int((time.monotonic() - started) * 1000)
+            progress(f"[ai] ✔ done — {iteration + 1} iters, {len(trace)} tool calls, {elapsed} ms")
             return InvestigateResponse(
                 question=question,
                 model=OPENROUTER_MODEL,
@@ -206,9 +179,9 @@ def investigate(question: str) -> InvestigateResponse:
                 trace=trace,
                 iterations=iteration + 1,
                 finish_reason="answer",
+                elapsed_ms=elapsed,
             )
 
-        # Execute every tool call the model asked for, in order.
         for tc in msg.tool_calls:
             name = tc.function.name
             try:
@@ -229,59 +202,41 @@ def investigate(question: str) -> InvestigateResponse:
                     result = {"error": f"tool raised: {type(e).__name__}: {e}"}
             duration_ms = int((time.monotonic() - t0) * 1000)
             payload_raw = json.dumps(result, default=str)
-            payload, truncated = _truncate_tool_result(name, payload_raw)
+            payload, truncated = _truncate(name, payload_raw)
 
-            jlog(
-                "tool executed",
-                iteration=iteration,
-                tool=name,
-                args=args,
-                duration_ms=duration_ms,
-                result_chars=len(payload),
-                truncated=truncated,
+            progress(
+                f"[ai] iter {iteration}  → {name}({_summarize_args(args)})  ({duration_ms} ms)",
+                iteration=iteration, tool=name, args=args, duration_ms=duration_ms, truncated=truncated,
             )
 
             trace.append(
                 ToolCallTrace(
-                    iter=iteration,
-                    tool=name,
-                    args=args,
+                    iter=iteration, tool=name, args=args,
                     duration_ms=duration_ms,
                     result_preview=payload_raw[:300],
                     truncated=truncated,
                 )
             )
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": payload})
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": payload,
-                }
-            )
-
-    # Fell out of the loop without a text-only answer.
-    jlog("agent hit iteration cap", iterations=MAX_AGENT_ITERATIONS)
+    elapsed = int((time.monotonic() - started) * 1000)
+    progress(f"[ai] ⚠ hit {MAX_AGENT_ITERATIONS}-iteration cap, returning partial findings ({elapsed} ms)")
     return InvestigateResponse(
         question=question,
         model=OPENROUTER_MODEL,
-        insight=(
-            f"Investigation hit the {MAX_AGENT_ITERATIONS}-iteration cap without "
-            "converging. Trace below shows what was attempted."
-        ),
+        insight=f"Investigation hit the {MAX_AGENT_ITERATIONS}-iteration cap without converging. Trace below shows what was attempted.",
         trace=trace,
         iterations=MAX_AGENT_ITERATIONS,
         finish_reason="iteration_cap",
+        elapsed_ms=elapsed,
     )
 
 
-# ─── FastAPI ────────────────────────────────────────────────────────────────────
+# ─── FastAPI ───────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="SRE AI Observability",
-    description=(
-        "Natural-language → multi-turn tool-calling agent over Prometheus + Elasticsearch."
-    ),
+    description="Natural-language → multi-turn tool-calling agent over Prometheus + Elasticsearch.",
     version="0.1.0",
 )
 
@@ -298,18 +253,23 @@ def healthz() -> dict[str, Any]:
 
 @app.post("/investigate", response_model=InvestigateResponse)
 def investigate_endpoint(req: InvestigateRequest) -> InvestigateResponse:
-    jlog("investigate request", question=req.question)
     return investigate(req.question)
 
 
-# ─── CLI mode ───────────────────────────────────────────────────────────────────
+# ─── CLI ───────────────────────────────────────────────────────────────────────
 
 
 def _cli() -> int:
-    if len(sys.argv) < 2:
-        print("usage: python -m ai_service.app '<question>'", file=sys.stderr)
+    global _quiet
+    args = sys.argv[1:]
+    if "--quiet" in args:
+        _quiet = True
+        args = [a for a in args if a != "--quiet"]
+    if not args:
+        print("usage: python -m ai_service.app [--quiet] '<question>'", file=sys.stderr)
         return 2
-    question = " ".join(sys.argv[1:])
+
+    question = " ".join(args)
     result = investigate(question)
     print(json.dumps(result.model_dump(), indent=2, default=str))
     return 0

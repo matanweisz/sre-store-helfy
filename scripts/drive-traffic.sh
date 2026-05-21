@@ -1,69 +1,73 @@
 #!/usr/bin/env bash
-# Drive realistic traffic through the user journey so the dashboards light up
-# and the AI agent has something to investigate.
-#
-# Usage:
-#   ./scripts/drive-traffic.sh                    # 20 iterations at default pace
-#   ./scripts/drive-traffic.sh 50                 # 50 iterations
-#   BASE=http://localhost:4000 ./scripts/drive-traffic.sh
-#
-# Requires: curl, jq.
-
+# Drive a user-journey load: login + browse + cart + checkout + pay.
+# Usage: ./scripts/drive-traffic.sh [iterations]
 set -euo pipefail
 
 BASE="${BASE:-http://localhost:4000}"
 EMAIL="${EMAIL:-demo@shop.local}"
 PASSWORD="${PASSWORD:-demopass}"
 ITERATIONS="${1:-20}"
-SLEEP_BETWEEN="${SLEEP_BETWEEN:-0.3}"   # seconds between user-journey iterations
+SLEEP_BETWEEN="${SLEEP_BETWEEN:-0.3}"
+READY_TIMEOUT="${READY_TIMEOUT:-30}"
 
 log() { printf '[drive-traffic %s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
-# 1. Log in
+# Wait for the backend to be reachable. The container's port binds as soon as
+# the process starts, but Express only starts listening after MySQL is ready
+# and initSchema() finishes — so a bare curl right after `compose up` can get
+# "Empty reply from server".
+log "waiting up to ${READY_TIMEOUT}s for $BASE/healthz"
+for i in $(seq 1 "$READY_TIMEOUT"); do
+  if curl -fsS "$BASE/healthz" >/dev/null 2>&1; then
+    log "backend is ready"
+    break
+  fi
+  if [[ "$i" -eq "$READY_TIMEOUT" ]]; then
+    log "ERROR: backend never became ready"
+    exit 1
+  fi
+  sleep 1
+done
+
 log "logging in as $EMAIL"
 TOKEN=$(curl -fsS -X POST "$BASE/api/auth/login" \
   -H 'content-type: application/json' \
   -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" | jq -r .token)
 if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
-  log "ERROR: login failed — is the backend up at $BASE?"
+  log "ERROR: login failed"
   exit 1
 fi
 AUTH="authorization: Bearer $TOKEN"
 
-# 2. A couple of bad logins to populate the warn-level log stream too.
+# A few bad logins to populate warn-level logs.
 log "driving 3 bad logins"
-for i in 1 2 3; do
+for _ in 1 2 3; do
   curl -fsS -o /dev/null -X POST "$BASE/api/auth/login" \
     -H 'content-type: application/json' \
-    -d '{"email":"nope@example.com","password":"wrong"}' || true
+    -d '{"email":"nope@example.com","password":"wrong"}' 2>/dev/null || true
 done
 
-# 3. Browse + cart + checkout + pay, iterations times.
 log "running $ITERATIONS user-journey iterations (sleep ${SLEEP_BETWEEN}s between)"
 SUCCEEDED=0
 FAILED=0
-for i in $(seq 1 "$ITERATIONS"); do
-  # Browse the catalog (general + with search + the slow related endpoint).
+for _ in $(seq 1 "$ITERATIONS"); do
   curl -fsS -o /dev/null "$BASE/api/products" || true
   curl -fsS -o /dev/null "$BASE/api/products?search=mug" || true
-  # The deliberate slow query — exercise it so its DB histogram gets data.
+  # Exercise the deliberately-slow self-join.
   PROD_FOR_RELATED=$(( (RANDOM % 100) + 1 ))
   curl -fsS -o /dev/null "$BASE/api/products/$PROD_FOR_RELATED/related" || true
 
-  # Random product to cart.
   PROD=$(( (RANDOM % 100) + 1 ))
   curl -fsS -o /dev/null -X POST "$BASE/api/cart/items" \
     -H "$AUTH" -H 'content-type: application/json' \
     -d "{\"product_id\":$PROD,\"quantity\":1}" || true
 
-  # Checkout.
   ORDER=$(curl -fsS -X POST "$BASE/api/checkout" \
     -H "$AUTH" -H 'content-type: application/json' | jq -r .order_id 2>/dev/null || echo "")
   if [[ -z "$ORDER" || "$ORDER" == "null" ]]; then
     continue
   fi
 
-  # Pay — backend's mock provider succeeds or fails per PAYMENT_FAILURE_RATE.
   RESP=$(curl -fsS -X POST "$BASE/api/payment" \
     -H "$AUTH" -H 'content-type: application/json' \
     -d "{\"order_id\":$ORDER,\"card_number\":\"4242424242424242\"}" 2>/dev/null || echo '{"error":"payment_declined"}')
@@ -76,4 +80,10 @@ for i in $(seq 1 "$ITERATIONS"); do
   sleep "$SLEEP_BETWEEN"
 done
 
-log "done: $SUCCEEDED payments succeeded, $FAILED failed (rate: $(awk "BEGIN{printf \"%.1f\", $FAILED * 100 / ($SUCCEEDED + $FAILED + 0.001)}")%)"
+TOTAL=$((SUCCEEDED + FAILED))
+if [[ "$TOTAL" -gt 0 ]]; then
+  RATE_PCT=$(( FAILED * 100 / TOTAL ))
+else
+  RATE_PCT=0
+fi
+log "done: $SUCCEEDED payments succeeded, $FAILED failed (failure rate: ${RATE_PCT}%)"
