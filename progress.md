@@ -42,11 +42,11 @@ Live checklist of every step in the 4-hour build. Tick as we go.
 - [ ] Commit: `feat: structured logging via pino + filebeat -> elasticsearch`
 
 ## Block 4 — Grafana + dashboard (25 min)
-- [ ] `grafana/provisioning/datasources/datasources.yaml` (pinned UIDs)
-- [ ] `grafana/provisioning/dashboards/dashboards.yaml`
-- [ ] `grafana/dashboards/user-journey.json` (6 panels)
-- [ ] `grafana` service in compose with anonymous admin envs
-- [ ] **Verify**: localhost:3000 opens, dashboard renders with live data
+- [x] `grafana/provisioning/datasources/datasources.yaml` (pinned UIDs `prometheus` + `elasticsearch`, ES targets `logs-app.ecom-dev*` data stream)
+- [x] `grafana/provisioning/dashboards/dashboards.yaml` (file provider, watching /var/lib/grafana/dashboards)
+- [x] `grafana/dashboards/user-journey.json` — 9 panels in 3 rows: RED (rate-by-route, status family, error %, latency p50/p95/p99) + funnel (cart-adds, checkouts, payments, failure-rate) + Logs panel
+- [x] `grafana` service in compose (grafana:11.4.0 with anonymous admin envs)
+- [x] **Verify PASSED**: localhost:3000 health 200; provisioned datasources query via proxy (Prom request-rate per route + p95 per route); ES proxy via _msearch returns warn/error logs with full ECS fields; dashboard discovered in SRE folder with 12 panel entries.
 - [ ] Commit: `feat: grafana with provisioned User Journey dashboard`
 
 ## Block 5 — AI observability service (45 min)

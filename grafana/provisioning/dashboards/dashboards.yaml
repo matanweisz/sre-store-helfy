@@ -1,0 +1,21 @@
+# Tells Grafana to watch /var/lib/grafana/dashboards (mounted from
+# ./grafana/dashboards on the host) and auto-import every JSON dashboard.
+#
+# updateIntervalSeconds: 10 means edits to the JSON file are picked up almost
+# immediately — useful while iterating.
+
+apiVersion: 1
+
+providers:
+  - name: 'sre-assignment'
+    orgId: 1
+    folder: 'SRE'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    # Lets us edit panels in the UI for exploration; the file is still the
+    # source of truth and will overwrite UI edits on the next reload.
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

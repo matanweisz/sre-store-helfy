@@ -83,7 +83,20 @@ This is the kind of detail the assignment grades as "AI-gap awareness": an LLM t
 **Verify**: 42 docs indexed across an info/warn level split. ES auto-created data stream `.ds-logs-app.ecom-dev-*`. All four business events (`payment recorded`, `order created`, `login succeeded`, `handled error: <code>`) have full `ecom.*` payloads. `url.path`, `http.request.method`, `http.response.status_code`, `event.duration`, `event.outcome`, `trace.id` all at ECS-canonical root paths. The AI agent can search by `ecom.error_code:payment_declined`, `url.path:/api/payment`, `log.level:error`, etc.
 
 ### Block 4 — Grafana
-_(TBD)_
+
+**Stack**: `grafana:11.4.0` with anonymous admin access. File-based provisioning at `/etc/grafana/provisioning/{datasources,dashboards}/*.yaml` plus dashboard JSON in `/var/lib/grafana/dashboards/`.
+
+**Datasources**: Prometheus + Elasticsearch with **pinned UIDs** (`prometheus`, `elasticsearch`) referenced from the dashboard JSON's `datasource: { type, uid }` blocks. This is the canonical fix for the "Datasource not found" gotcha — auto-generated UIDs differ across container recreates.
+
+**Dashboard layout** matches `guidelines.md` §3:
+- Row 1 (RED): Request rate by route • Status family stacked (2xx/4xx/5xx) • Error rate % stat • Latency p50/p95/p99 by route
+- Row 2 (Funnel): Cart-adds/min • Checkouts/min • Payments/min • Payment failure rate (thresholded)
+- Row 3 (Logs): warn+error logs panel pinned to Elasticsearch
+- Variable `$route` drives the top-row filters; populated from `label_values(http_requests_total, route)`.
+
+**No manual fixes this block.** First boot worked on the first try — pinned UIDs + Grafana 11's stable schemaVersion 39 + explicitly-typed panels meant nothing surprised me. Notable detail: Grafana's ES datasource proxy refuses raw POSTs against any path other than `_msearch` (security: prevents abuse of the proxy as a write channel). Panel queries naturally use `_msearch`, so this is invisible from the UI; only relevant when scripting against the proxy.
+
+**Verify**: 8 services healthy (`mysql`, `backend`, `frontend`, `prometheus`, `elasticsearch`, `kibana`, `filebeat`, `grafana`). Prometheus proxy from Grafana returns `/api/payment/` p95 ≈ 490ms (matches the catalog's "uniform 120–450ms → p95 ≈ 450ms" prediction). ES proxy via _msearch returns warn/error logs with `ecom.error_code` and `url.path` populated. The dashboard is the kind of view an on-call engineer wants — top row tells you IF, middle tells you WHERE in the journey, bottom tells you WHAT.
 
 ### Block 5 — AI service
 _(TBD)_

@@ -1,0 +1,45 @@
+# Grafana datasources — provisioned at startup so the dashboard JSON below
+# can reference them by UID and survive container recreates.
+#
+# UIDs are pinned (not auto-generated) because the dashboard JSON references
+# the datasource by UID. If we let Grafana auto-assign UIDs, the panels would
+# break with "Datasource not found" on every fresh container.
+
+apiVersion: 1
+
+# Wipe any pre-existing datasources on each provisioning pass so we don't
+# accumulate duplicates if names change.
+prune: true
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+      manageAlerts: false
+      prometheusType: Prometheus
+
+  - name: Elasticsearch
+    type: elasticsearch
+    uid: elasticsearch
+    access: proxy
+    # Point at the data stream Filebeat writes to. The trailing `*` matches
+    # the rolling daily indices ES auto-creates underneath the data stream
+    # (.ds-logs-app.ecom-dev-YYYY.MM.DD-NNNNNN).
+    url: http://elasticsearch:9200
+    database: "logs-app.ecom-dev*"
+    editable: true
+    jsonData:
+      index: "logs-app.ecom-dev*"
+      timeField: "@timestamp"
+      # ES 9.x doesn't need explicit version metadata — Grafana negotiates.
+      maxConcurrentShardRequests: 5
+      # These two power the Logs visualization's coloring + message column.
+      logMessageField: message
+      logLevelField: log.level
