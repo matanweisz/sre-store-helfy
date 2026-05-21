@@ -52,15 +52,17 @@ The catalog the AI reads, the metrics on `/metrics`, and the panels on the dashb
 
 ## Run it
 
-> Tested on Rancher Desktop (dockerd/moby engine) on Apple Silicon. Budget ~6 GB of RAM for the 9 containers.
+You need Docker (tested on Rancher Desktop with the dockerd engine on Apple Silicon) and ~6 GB of RAM free for the 9 containers. The runtime AI agent needs an OpenRouter API key.
 
 ```bash
 cp .env.example .env
-# paste your OpenRouter API key into .env:
+# Paste your OpenRouter API key into .env:
 #   OPENROUTER_API_KEY=sk-or-v1-...
 
 docker compose up --build -d
 ```
+
+`docker compose ps` should show all 9 services healthy after about a minute. Here's where each one lives:
 
 | Service | URL | Notes |
 |---|---|---|
@@ -72,50 +74,76 @@ docker compose up --build -d
 | Kibana | http://localhost:5601 | optional, for ad-hoc log exploration |
 | AI service | http://localhost:8000 | `POST /investigate`, or CLI mode (below) |
 
-### Drive the canonical demo
+### Try it in 4 steps
 
-The AI investigation can take 15–45 seconds (Sonnet 4.6, 5–10 tool calls). To see what the agent is doing while it works, tail the service logs in a second terminal:
+Now that the stack is up, here's the path that shows what this project actually does: instrument an app you own, watch the dashboards react to real traffic, then ask an AI agent natural-language questions about what's happening inside.
+
+#### Step 1 — Open the dashboard
+
+Visit **http://localhost:3000**. It opens straight on the *User Journey* dashboard (no login). The panels are empty for now because nothing's happening yet. Leave this tab open — we'll come back to it.
+
+#### Step 2 — Drive some traffic
 
 ```bash
-# Terminal 1 — watch the agent's progress in real time
+./scripts/drive-traffic.sh 20
+```
+
+The script logs in as the demo user and runs 20 end-to-end user journeys (browse → cart → checkout → pay). It takes about ten seconds. When it finishes, refresh the Grafana tab: every panel now has data. Request rates climb, latency p95 lines fill in, the funnel stats (cart → checkout → payment) show throughput per minute.
+
+This is the "everything is healthy" baseline.
+
+#### Step 3 — Break something on purpose
+
+The payment route has a knob: `PAYMENT_FAILURE_RATE`. The default is `0.08` (8% of payments fail, which is normal). Bump it to half and drive another wave:
+
+```bash
+docker compose stop backend
+PAYMENT_FAILURE_RATE=0.5 docker compose up -d backend
+./scripts/drive-traffic.sh 20
+```
+
+Watch Grafana. Within about a minute:
+
+- The **Payment failure rate** stat turns red (it's well above the 8% baseline now)
+- The **Recent error logs** panel at the bottom fills with `ecom.error_code: payment_declined` events
+- The funnel shows checkouts continuing but payments dropping off
+
+You've just created a payment incident. Now ask the AI to investigate it.
+
+#### Step 4 — Ask the AI what's wrong
+
+You have two ways to ask. The agent takes 15–45 seconds either way (it makes 5–10 tool calls against Prometheus and Elasticsearch), so it's worth watching its progress in a second terminal:
+
+```bash
+# In a second terminal — see what the agent is doing in real time
 docker compose logs -f ai-service
 ```
 
 ```bash
-# Terminal 2 — drive traffic and ask
-./scripts/drive-traffic.sh 20
-
-# Bump the failure rate so the AI has something to find
-docker compose stop backend
-PAYMENT_FAILURE_RATE=0.5 docker compose up -d backend
-./scripts/drive-traffic.sh 20
-
-# Wait a moment for Prometheus to scrape and Filebeat to ship
-sleep 15
-
-# Ask the AI — terminal 1 will show iter-by-iter progress while this runs
-echo "⏳ investigating (15-45s)..."
-curl -s -X POST localhost:8000/investigate \
+# Then ask, in your first terminal:
+curl -X POST localhost:8000/investigate \
   -H 'content-type: application/json' \
   -d '{"question":"anything wrong with payments in the last 15 minutes?"}' | jq .
 
-# Or via the CLI (prints the same progress, then the JSON result)
+# Or use the CLI (same answer, prints progress to your terminal as it goes):
 docker compose exec ai-service python -m ai_service.app "anything wrong with payments?"
 ```
 
-Terminal 1 will show lines like:
+In the logs terminal you'll see lines arriving as the agent works:
 
 ```
 [ai] ▶ investigating: anything wrong with payments in the last 15 minutes?
-[ai] iter 0  → query_prometheus(promql=sum(rate(ecom_payments_total{outcome="failed"}[5m]))/..., time_range=15m)  (5 ms)
-[ai] iter 0  → query_prometheus(promql=histogram_quantile(0.95, sum by (le)(rate(...))), time_range=15m)  (4 ms)
+[ai] iter 0  → query_prometheus(promql=sum(rate(ecom_payments_total{outcome=..., time_range=15m)  (7 ms)
+[ai] iter 0  → query_prometheus(promql=histogram_quantile(0.95, sum by (le)(..., time_range=15m)  (4 ms)
 [ai] iter 1  → get_metric_catalog()  (1 ms)
-[ai] iter 1  → get_recent_errors(route=/api/payment, time_range=15m)  (15 ms)
-[ai] iter 2  → query_prometheus(...)  (4 ms)
-[ai] ✔ done — 3 iters, 7 tool calls, 21845 ms
+[ai] iter 1  → get_recent_errors(route=/api/payment, time_range=15m)  (13 ms)
+[ai] iter 2  → query_prometheus(promql=histogram_quantile(0.95, sum by (query_name, le)(..., time_range=15m)  (8 ms)
+[ai] ✔ done — 4 iters, 5 tool calls, 41725 ms
 ```
 
-Within a minute of the failure-rate bump, the Grafana *Payment failure rate* panel goes red and the *Recent error logs* row fills with `ecom.error_code:payment_declined` events. A captured transcript from this exact run is below in [Sample AI Investigation](#sample-ai-investigation).
+The agent picks each next move based on what the previous one told it — no fixed script. When it's done, you get back a written incident note in plain English: what's wrong, why it's wrong, what's *not* wrong (the negative evidence), and a concrete next action to take. The exact transcript from a live run is captured in the [Sample AI Investigation](#sample-ai-investigation) section below.
+
+That's the loop the project enables: instrument the user journey → see anomalies on the dashboard → ask the AI for the *reasoning*, not the numbers.
 
 ---
 
