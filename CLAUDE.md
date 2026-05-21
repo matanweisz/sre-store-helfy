@@ -14,6 +14,8 @@ The build was driven by three **blueprint** docs at the repo root that are the c
 
 `progress.md` tracks build state; `ai-log.md` is the honest record of LLM usage and manual fixes. `sre-store/` is the pristine pre-instrumentation reference — gitignored, do not edit.
 
+**Quick orientation:** `git log --oneline` gives one commit per block (chore: baseline → blueprint → prom-client → pino+filebeat → grafana → AI service → docs+investigation). Each commit message documents what was added, why, and any manual fixes during that block.
+
 ## Run / dev commands
 
 ```bash
@@ -22,7 +24,7 @@ docker compose up --build
 
 # Drive traffic into the stack (used to make AI investigations interesting)
 PAYMENT_FAILURE_RATE=0.5 docker compose up -d backend   # bump failures, then drive traffic
-./scripts/drive-traffic.sh                              # not yet authored — see initial.md §5
+./scripts/drive-traffic.sh 20                           # 20 user-journey iterations
 
 # Backend (Node 20, TS via tsx — no build step in dev)
 cd backend && npm install
@@ -56,9 +58,16 @@ If you add a metric you MUST update the catalog in the same change — the AI ha
 
 **Filebeat → Elasticsearch is intentionally minimal.** ILM and templates are disabled (`setup.ilm.enabled: false`, `setup.template.enabled: false`) to avoid the data-stream auto-creation dance; index is the literal `logs-app.ecom-dev`. The AI service queries the wildcard `logs-app.ecom-dev*` in `tools.py::ES_LOG_INDEX` so it works whether or not a data stream gets created.
 
+**Don't "fix" these — they're load-bearing:**
+- `docker-compose.yml` ES healthcheck uses bash `/dev/tcp/localhost/9200`. The ES 9.x image strips both `curl` AND `wget`; this is the canonical no-binary probe.
+- `filebeat/filebeat.yml` uses `type: filestream` with a `container` parser. `type: container` was deprecated in Filebeat 9.x and will refuse to start.
+- `docker-compose.yml` Filebeat `command: ["filebeat", "-e", "--strict.perms=false"]`. The image ENTRYPOINT is `filebeat` (expects a subcommand) — omitting the subcommand prints help and exits 1.
+- `ai_service/app.py` configures `logging.basicConfig(stream=sys.stderr, ...)`. CLI mode (`python -m ai_service.app "<question>"`) must keep stdout pure JSON so callers can `json.loads()` it.
+- `ai_service/tools.py::query_prometheus` returns an explicit `hint` when `series_count == 0`. This is what makes the LLM pivot from a hallucinated metric name to calling `get_metric_catalog` instead of guessing again.
+
 **Grafana datasource UIDs are pinned** in `grafana/provisioning/datasources/datasources.yaml` to `prometheus` and `elasticsearch`. The dashboard JSON (`grafana/dashboards/user-journey.json`) references these UIDs directly — do not let Grafana auto-generate new UIDs or panels will silently break. The dashboard layout (RED → funnel → logs) is documented in `guidelines.md` §3.
 
-**AI agent loop** (`ai_service/app.py`, to be written per `initial.md` Phase 4): OpenAI SDK pointed at OpenRouter, model `anthropic/claude-sonnet-4.6`, native function-calling, max 10 iterations, tool results truncated to ~8000 chars. The four tools live in `ai_service/tools.py`: `get_metric_catalog`, `query_prometheus`, `search_logs`, `get_recent_errors`. The system prompt in `prompts.py` is copied verbatim from `initial.md` Phase 4 — it encodes the triage loop. **Never edit the prompt without updating `guidelines.md` §6** (they must stay aligned).
+**AI agent loop** (`ai_service/app.py:investigate`): OpenAI SDK pointed at OpenRouter, model `anthropic/claude-sonnet-4.6`, native function-calling, max 10 iterations, tool results truncated to ~8000 chars (catalog gets 16000). The four tools live in `ai_service/tools.py`: `get_metric_catalog`, `query_prometheus`, `search_logs`, `get_recent_errors`. The system prompt in `prompts.py` is copied verbatim from `initial.md` Phase 4 — it encodes the triage loop. **Never edit the prompt without updating `guidelines.md` §6** (they must stay aligned).
 
 ## Project-specific rules
 
@@ -68,3 +77,10 @@ If you add a metric you MUST update the catalog in the same change — the AI ha
 - **Pin all image tags.** No `:latest`. Current pins: prometheus `v3.6.0`, ES/Kibana/Filebeat `9.4.1`, Grafana `11.4.0`, MySQL `8.4`.
 - **Don't invent metric or log-field names.** If a name isn't in `metric-catalog.md`, add it to the catalog in the same commit (description + why + normal + change implies).
 - **The Blueprint files are graded artifacts.** `metric-catalog.md`, `guidelines.md`, `initial.md` are not just docs — re-running `initial.md` against a fresh checkout of `sre-store/` should reproduce the stack. Keep them in sync with the code.
+
+## Environment / Rancher Desktop gotchas
+
+- `~/.docker/config.json` with `"credsStore": "osxkeychain"` (leftover from Docker Desktop) breaks every `docker compose pull` on Rancher. Remove the line; Rancher needs no credential helper for public Docker Hub images.
+- Rancher Settings → Container Engine = **dockerd (moby)**. Compose won't see the daemon under containerd.
+- VM defaults to 4 GB RAM / 2 CPUs — too small for the 9-container stack. Bump to 8 GB / 4 CPUs in Preferences → Virtual Machine, then **Quit & Restart Rancher** (not "reset Kubernetes") for changes to take effect.
+- Shell snapshot quirk: if `cd backend` fails with `zoxide: no match found` inside `Bash` tool calls, the harness's captured zsh snapshot has zoxide overriding `cd`. Fix `~/.zshrc` (`zoxide init zsh`, not `zoxide init --cmd cd zsh`) AND patch the snapshot at `~/.claude/shell-snapshots/snapshot-zsh-*.sh` to remove the `cd () { __zoxide_z "$@"; }` function.
