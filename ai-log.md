@@ -130,8 +130,30 @@ This is the kind of detail the assignment grades as "AI-gap awareness": an LLM t
 
 **MCP gap-awareness**: built natively (function calling) not via MCP. MCP is the right transport for cross-process / cross-agent tool servers; for 4 in-process functions colocated with the LLM client it adds JSON-RPC and zero behavioral value. Documented as the natural upgrade path in `app.py` and `tools.py` module docstrings.
 
-### Block 6 — E2E investigation
-_(TBD)_
+### Block 6 — E2E investigation capture
+
+**Traffic script**: `scripts/drive-traffic.sh` — logs in, fires 3 bad-credential probes (to populate the warn-level log stream), then loops `N` iterations of browse + cart + checkout + pay with a small inter-iter sleep so events distribute in time.
+
+**Canonical demo**:
+1. Drove 20 iterations at the default 8% failure rate → wave 1 of healthy traffic.
+2. Set `PAYMENT_FAILURE_RATE=0.5`, restarted backend, drove 20 more → wave 2 with elevated failures.
+3. After ingestion, Prometheus showed `sum(rate(ecom_payments_total{outcome="failed"}[5m])) / sum(rate(ecom_payments_total[5m])) = 0.375` (37.5%) and totals of 7 succeeded vs. 12 failed.
+
+**Investigation**: `curl POST /investigate` with `"Anything wrong with payments in the last 15 minutes? Walk me through your reasoning and give me a triage-style writeup with a concrete next action."` → 3 iterations, 7 tool calls:
+
+- **iter 0** ran 3 `query_prometheus` calls IN PARALLEL — failure-rate ratio, payment route p95, total payment request rate. The model batched its initial confirmation set.
+- **iter 1** called `get_metric_catalog` (grounding for the next query against real field names) AND `get_recent_errors` for `/api/payment` (the qualitative breakdown).
+- **iter 2** queried payment p95 again (re-confirmation) AND DB `payment_record` p95 — the **negative-evidence check** that rules out internal cause.
+- Iter 3 = text-only conclusion.
+
+The final insight is in `docs/sample-investigation.json` and quoted verbatim in the README. It hits every grading criterion:
+- *Insight, not numbers* — narrative form, plain prose
+- *Catalog ↔ runtime alignment* — explicitly cites the catalog line `"failed rate climbing above ~10% → either someone bumped PAYMENT_FAILURE_RATE"` (proves the LLM is reading the catalog file, not its training memory)
+- *Strong-output template* — symptom (with numbers + window) + supporting evidence + **negative evidence** (DB p95 flat) + concrete next action
+
+**Manual fix #12 (Grafana image renderer not installed)**: tried to capture a dashboard PNG via `/render?d=user-journey` — Grafana returned a "No image renderer available/installed" placeholder image (478×208). The renderer plugin is a separate ~250 MB container; not worth the dependency for the 4-hour timebox. Compromise: dumped panel data via Prometheus API to `docs/dashboard-state.json` so the README has a concrete numerical snapshot of what the live dashboard shows. Matan to take a real browser screenshot before submission.
+
+**README polish** (intended for Block 7 but pulled forward while the demo context was fresh): filled in all six placeholder sections with substantive content. The Observability Stack section now documents both the metric registry layout and the ECS log shape. The AI Service section shows the 25-line agent loop, the four tools, and the system prompt skeleton. The Tradeoffs section explicitly addresses all five knobs the PDF named (cardinality, sampling, log volume, MCP-vs-native, model choice). README is review-ready; Block 7 is now just the fresh-clone verification + GitHub push.
 
 ## AI-gap awareness — where the AI fell short
 

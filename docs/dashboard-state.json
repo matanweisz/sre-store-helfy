@@ -1,0 +1,48 @@
+{
+  "cart_items_added_per_minute": 6.354233333333334,
+  "checkouts_succeeded_per_minute": 6.3543666666666665,
+  "db_query_p95_seconds": {
+    "query_name=checkout_create_order": 0.02375,
+    "query_name=payment_record": 0.02375,
+    "query_name=products_related": 0.02375
+  },
+  "error_rate_5xx_percent": 0.0,
+  "latency_p50_by_route_seconds": {
+    "route=/api/auth/login": NaN,
+    "route=/api/cart/items": 0.012931034482758622,
+    "route=/api/checkout/": 0.0125,
+    "route=/api/payment/": 0.2866032223182175,
+    "route=/api/products/": 0.0125,
+    "route=/api/products/:id/related": 0.0125
+  },
+  "latency_p95_by_route_seconds": {
+    "route=/api/auth/login": NaN,
+    "route=/api/cart/items": 0.024568965517241383,
+    "route=/api/checkout/": 0.02375,
+    "route=/api/payment/": 0.47769230769230764,
+    "route=/api/products/": 0.02375,
+    "route=/api/products/:id/related": 0.02375
+  },
+  "payment_failure_rate_fraction": 0.37931034482758624,
+  "payments_succeeded_per_minute": 3.8127000000000004,
+  "payments_total_cumulative": {
+    "__name__=ecom_payments_total | instance=backend:4000 | job=shop-backend | outcome=failed | provider=mock-stripe | service=shop-backend": 12.0,
+    "__name__=ecom_payments_total | instance=backend:4000 | job=shop-backend | outcome=succeeded | provider=mock-stripe | service=shop-backend": 7.0
+  },
+  "request_rate_by_route_req_per_sec": {
+    "route=/api/auth/login": 0.0,
+    "route=/api/cart/items": 0.0,
+    "route=/api/checkout/": 0.0,
+    "route=/api/payment/": 0.0,
+    "route=/api/products/": 0.0,
+    "route=/api/products/:id/related": 0.0
+  },
+  "status_class_distribution": {
+    "status_code=200": 0.3918176666666667,
+    "status_code=201": 0.21179333333333333,
+    "status_code=400": 0.0,
+    "status_code=401": 0.0,
+    "status_code=402": 0.038828777777777775,
+    "status_code=409": 0.0
+  }
+}

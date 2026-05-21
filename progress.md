@@ -59,10 +59,13 @@ Live checklist of every step in the 4-hour build. Tick as we go.
 - [ ] Commit: `feat: AI observability service with multi-turn tool calling`
 
 ## Block 6 — E2E drill + sample investigation (30 min)
-- [ ] `scripts/drive-traffic.sh`
-- [ ] Run clean, drive normal traffic, bump failure rate, drive again
-- [ ] Capture investigation into `docs/sample-investigation.json`
-- [ ] Embed in README "Sample AI Investigation" section
+- [x] `scripts/drive-traffic.sh` (logs in, bad-logins, browse+cart+checkout+pay loop with configurable iterations)
+- [x] Run clean baseline traffic (8% failure rate), then bumped to 0.5 and ran again — Prometheus showed 37.9% failure rate in the 5m window
+- [x] Capture investigation into `docs/sample-investigation.json` (3 iter / 7 tool calls — parallel queries in iter 0, catalog consult in iter 1, negative evidence in iter 2)
+- [x] Capture dashboard panel state into `docs/dashboard-state.json` (since the Grafana image renderer plugin isn't installed — a manual screenshot from the browser would be a nice-to-have for the README before submission)
+- [x] Embed in README "Sample AI Investigation" section verbatim — includes the trace table, the strong-output narrative, and a callout that it explicitly cites `metric-catalog.md`'s diagnostic guidance
+- [x] Also filled in Observability Stack, AI Service, Dashboard Walkthrough, AI-Gap Awareness, Tradeoffs sections (originally planned for Block 7 — pulled them forward while context was fresh)
+- [x] **Verify PASSED**: README is review-ready end-to-end, every relative link resolves, captured transcript has ≥2 distinct tool calls AND references catalog metric names AND includes the time window AND has a concrete next action
 - [ ] Commit: `docs: sample AI investigation transcript`
 
 ## Block 7 — README polish + push (20 min)
