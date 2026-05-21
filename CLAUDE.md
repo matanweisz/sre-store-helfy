@@ -1,0 +1,70 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this repo is
+
+Junior AI SRE home assignment. A deliberately-uninstrumented Node.js + Express + React eCommerce app (`backend/`, `frontend/`) is wrapped in an observability stack (Prometheus, Elasticsearch+Filebeat, Grafana) plus a standalone Python AI service (`ai-service/`) that investigates the running system via multi-turn LLM tool calls against OpenRouter (`anthropic/claude-sonnet-4.6`).
+
+The build was driven by three **blueprint** docs at the repo root that are the contract every other artifact must agree with — read these before touching anything substantive:
+
+- `metric-catalog.md` — every metric and log field, with normal ranges and what changes imply. **Single source of truth.** The catalog file is mounted into the AI service container at `/app/metric-catalog.md` and loaded by the `get_metric_catalog` tool.
+- `guidelines.md` — log format, metric naming, cardinality rules, the **triage loop** (§6) the runtime LLM follows. The triage loop is the most important part of this file.
+- `initial.md` — the bootstrap prompt that produced the stack; five phases with hard verify gates.
+
+`progress.md` tracks build state; `ai-log.md` is the honest record of LLM usage and manual fixes. `sre-store/` is the pristine pre-instrumentation reference — gitignored, do not edit.
+
+## Run / dev commands
+
+```bash
+# Full stack (requires .env with OPENROUTER_API_KEY)
+docker compose up --build
+
+# Drive traffic into the stack (used to make AI investigations interesting)
+PAYMENT_FAILURE_RATE=0.5 docker compose up -d backend   # bump failures, then drive traffic
+./scripts/drive-traffic.sh                              # not yet authored — see initial.md §5
+
+# Backend (Node 20, TS via tsx — no build step in dev)
+cd backend && npm install
+npm run dev           # tsx watch src/index.ts
+npm run typecheck     # tsc --noEmit
+npm run seed          # populate MySQL with seed products
+
+# Frontend (Vite + React)
+cd frontend && npm install
+npm run dev           # vite on :5173
+npm run typecheck
+
+# AI service (Python 3.12, FastAPI + openai SDK pointed at OpenRouter)
+# Run via docker compose; pyproject.toml is the install manifest.
+```
+
+Service ports: backend `:4000` (+`/metrics`), frontend `:5173`, prometheus `:9090`, elasticsearch `:9200`, kibana `:5601`, grafana `:3000` (anonymous admin, no login), ai-service `:8000` (`POST /investigate`). Demo creds: `demo@shop.local / demopass`.
+
+## Architecture — the parts that span multiple files
+
+**Catalog ↔ code ↔ AI runtime must agree.** Three places reference the same metric/log-field names:
+1. Definitions in `backend/src/metrics.ts` (and emit sites in `backend/src/routes/*.ts` and `backend/src/logger.ts`).
+2. Documentation in `metric-catalog.md`.
+3. Loaded into the LLM's context at runtime via `ai_service/tools.py::get_metric_catalog`.
+
+If you add a metric you MUST update the catalog in the same change — the AI hallucinates without it. See `guidelines.md` §5a for the full procedure.
+
+**Backend HTTP labeling has a non-obvious wrinkle.** `backend/src/metrics.ts` exports a `stampRouteTemplate` middleware that every router in `routes/*.ts` installs via `router.use(stampRouteTemplate)` at the top. This exists because on the error path Express clears `req.baseUrl` before the global error handler runs, so reading `req.baseUrl + req.route.path` at `res.on('finish')` returns only the local path (`/login`) instead of the full template (`/api/auth/login`). The stamp captures `baseUrl` while it's still correct. Don't remove the stamp pattern — the full reasoning is in `metrics.ts` ~lines 121–157 and `ai-log.md` Block 2.
+
+**Logging targets ECS field paths, not pino defaults.** `backend/src/logger.ts` reshapes pino-http output so logs land at `url.path`, `http.response.status_code`, `event.duration`, `trace.id` (root-level), not nested under `req`/`res`. `@timestamp` is forced via a custom `timestamp` fn. Filebeat does no field remapping — what the backend emits is what lands in Elasticsearch.
+
+**Filebeat → Elasticsearch is intentionally minimal.** ILM and templates are disabled (`setup.ilm.enabled: false`, `setup.template.enabled: false`) to avoid the data-stream auto-creation dance; index is the literal `logs-app.ecom-dev`. The AI service queries the wildcard `logs-app.ecom-dev*` in `tools.py::ES_LOG_INDEX` so it works whether or not a data stream gets created.
+
+**Grafana datasource UIDs are pinned** in `grafana/provisioning/datasources/datasources.yaml` to `prometheus` and `elasticsearch`. The dashboard JSON (`grafana/dashboards/user-journey.json`) references these UIDs directly — do not let Grafana auto-generate new UIDs or panels will silently break. The dashboard layout (RED → funnel → logs) is documented in `guidelines.md` §3.
+
+**AI agent loop** (`ai_service/app.py`, to be written per `initial.md` Phase 4): OpenAI SDK pointed at OpenRouter, model `anthropic/claude-sonnet-4.6`, native function-calling, max 10 iterations, tool results truncated to ~8000 chars. The four tools live in `ai_service/tools.py`: `get_metric_catalog`, `query_prometheus`, `search_logs`, `get_recent_errors`. The system prompt in `prompts.py` is copied verbatim from `initial.md` Phase 4 — it encodes the triage loop. **Never edit the prompt without updating `guidelines.md` §6** (they must stay aligned).
+
+## Project-specific rules
+
+- **Cardinality is sacred.** Forbidden labels (per `guidelines.md` §2): `user_id`, `order_id`, `payment_id`, `cart_id`, `request_id`, `trace_id`, raw URL paths, free-text error messages, SKUs, emails, IPs. Use logs for per-entity drill-down.
+- **Don't touch `frontend/`.** The assignment PDF explicitly says polishing the app is not the point.
+- **`sre-store/` is read-only reference.** It's the pristine pre-instrumentation copy and gitignored — don't edit, don't commit changes inside it.
+- **Pin all image tags.** No `:latest`. Current pins: prometheus `v3.6.0`, ES/Kibana/Filebeat `9.4.1`, Grafana `11.4.0`, MySQL `8.4`.
+- **Don't invent metric or log-field names.** If a name isn't in `metric-catalog.md`, add it to the catalog in the same commit (description + why + normal + change implies).
+- **The Blueprint files are graded artifacts.** `metric-catalog.md`, `guidelines.md`, `initial.md` are not just docs — re-running `initial.md` against a fresh checkout of `sre-store/` should reproduce the stack. Keep them in sync with the code.

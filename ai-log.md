@@ -98,8 +98,37 @@ This is the kind of detail the assignment grades as "AI-gap awareness": an LLM t
 
 **Verify**: 8 services healthy (`mysql`, `backend`, `frontend`, `prometheus`, `elasticsearch`, `kibana`, `filebeat`, `grafana`). Prometheus proxy from Grafana returns `/api/payment/` p95 ≈ 490ms (matches the catalog's "uniform 120–450ms → p95 ≈ 450ms" prediction). ES proxy via _msearch returns warn/error logs with `ecom.error_code` and `url.path` populated. The dashboard is the kind of view an on-call engineer wants — top row tells you IF, middle tells you WHERE in the journey, bottom tells you WHAT.
 
-### Block 5 — AI service
-_(TBD)_
+### Block 5 — AI observability service
+
+**Stack**: Python 3.12 + FastAPI + the `openai` SDK pointed at OpenRouter (OpenRouter is OpenAI-compatible, so `tools` parameter works as-is with no translation layer). Native function calling (not MCP — mentioned as the natural upgrade path in module docstrings).
+
+**Model**: `anthropic/claude-sonnet-4.6` via the Helfy-provided OpenRouter key.
+
+**Four tools** — `get_metric_catalog`, `query_prometheus`, `search_logs`, `get_recent_errors`. Tool design rules I followed:
+- One verb-noun per tool; description leads with WHEN to use, not WHAT it returns.
+- `time_range` is an enum (`5m|15m|1h|24h`) so the LLM can't invent "1.5 hours" and break the query.
+- Pre-aggregate everything: Prometheus query returns top-10 series with last/min/max/mean and p50/p95 baked in; raw samples capped at 10 points/series. Log hits are stripped to ECS essentials (level, message, url.path, http.response.status_code, event.outcome, ecom.*, trace.id) — full _source is too noisy for the model.
+- Errors return as `{"error": str, "hint": str}` JSON, never raise — the LLM self-corrects on the next turn.
+
+**Agent loop** (`app.py:investigate`):
+- Max 10 iterations, 8 KB tool-result cap (16 KB for catalog), temperature 0.2.
+- Termination: model emits a tool-call-free message → that's the insight.
+- Every iteration is logged to stderr as JSON with iter#, tool name, args, duration, result preview.
+
+**Live verification — failing-payment scenario**:
+- Set `PAYMENT_FAILURE_RATE=0.5`, drove 12 user-journey iterations.
+- Asked `"Anything wrong with payments in the last 5 minutes? Give me a triage-style writeup."`
+- Agent ran 3 iterations, called 4 tools (parallel `query_prometheus` in iter 0, then `get_recent_errors` + `query_prometheus` in iter 1), produced a strong-output narrative with:
+  - The anomaly (~55% failure rate vs 8% baseline)
+  - **Negative evidence** (DB p95 flat at 24ms → not us)
+  - Root cause inference (external mock-stripe provider)
+  - Concrete next action (check provider status page)
+
+**Manual fix #10 (logger -> stdout polluted CLI JSON):** First CLI invocation produced `INFO: ...` log lines mixed with the JSON payload, breaking `json.loads`. Fixed by routing `logging.basicConfig(stream=sys.stderr, ...)` so server stays in container logs (where Filebeat would pick it up) but CLI stdout stays pure JSON.
+
+**Manual fix #11 (LLM hallucinated metric name → tool returned silent zero):** First CLI test asked about login failures and the LLM tried `ecom_auth_attempts_total` (doesn't exist — correct name is `auth_login_attempts_total`). My tool returned `series_count: 0` without explanation, and the LLM had to guess that this meant "metric doesn't exist." Improved `query_prometheus` to add an explicit hint ("zero series matched; most likely a misspelled metric name; call get_metric_catalog") whenever the result set is empty. After the fix, the LLM correctly pivoted: searched logs, queried (got hint), called catalog, re-queried with correct name, got recent_errors, concluded. That's exactly the assignment's "follow-up tool calls based on prior results, not a fixed sequence" criterion.
+
+**MCP gap-awareness**: built natively (function calling) not via MCP. MCP is the right transport for cross-process / cross-agent tool servers; for 4 in-process functions colocated with the LLM client it adds JSON-RPC and zero behavioral value. Documented as the natural upgrade path in `app.py` and `tools.py` module docstrings.
 
 ### Block 6 — E2E investigation
 _(TBD)_

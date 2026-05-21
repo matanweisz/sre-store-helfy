@@ -50,12 +50,12 @@ Live checklist of every step in the 4-hour build. Tick as we go.
 - [ ] Commit: `feat: grafana with provisioned User Journey dashboard`
 
 ## Block 5 — AI observability service (45 min)
-- [ ] `ai-service/` skeleton (Dockerfile, pyproject.toml)
-- [ ] `tools.py` — 4 tools + JSON schemas + registry
-- [ ] `prompts.py` — SRE triage system prompt
-- [ ] `app.py` — FastAPI + agent loop + CLI mode
-- [ ] `ai-service` in compose with env vars
-- [ ] **Verify**: `POST /investigate` returns narrative answer using ≥2 tool calls
+- [x] `ai-service/` skeleton (Dockerfile pinned python:3.12-slim, pyproject.toml deps frozen)
+- [x] `tools.py` — 4 tools (`get_metric_catalog`, `query_prometheus`, `search_logs`, `get_recent_errors`) + OpenAI-style JSON schemas + TOOL_REGISTRY; payloads pre-aggregated (top-10 series, ECS-stripped log hits); empty-result hint for misspelled metric names
+- [x] `prompts.py` — SRE triage system prompt with strong-vs-weak template
+- [x] `app.py` — FastAPI + agent loop (max 10 iter, 8KB tool-result cap, JSON-stderr logs for clean CLI stdout) + CLI mode
+- [x] `ai-service` in compose with OPENROUTER_API_KEY from .env, mount metric-catalog.md read-only
+- [x] **Verify PASSED**: investigate "payment failures, 5min" → 3 iter, 4 tool calls (query_prometheus×2, get_recent_errors, query_prometheus), strong-output narrative with hypothesis + supporting + negative evidence + next action. CLI mode prints clean JSON. Catalog hint made LLM self-correct on a misspelled metric name in iter 1→2.
 - [ ] Commit: `feat: AI observability service with multi-turn tool calling`
 
 ## Block 6 — E2E drill + sample investigation (30 min)

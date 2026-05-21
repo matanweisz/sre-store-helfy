@@ -159,6 +159,33 @@ services:
       - "3000:3000"
     networks: [shop]
 
+  ai-service:
+    build: ./ai-service
+    container_name: shop-ai-service
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+    environment:
+      # OpenRouter key resolved from .env at the repo root via docker compose's
+      # default env-file lookup.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-anthropic/claude-sonnet-4.6}
+      OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
+      PROMETHEUS_URL: http://prometheus:9090
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      METRIC_CATALOG_PATH: /app/metric-catalog.md
+      MAX_AGENT_ITERATIONS: "10"
+      TOOL_RESULT_CAP_CHARS: "8000"
+    # Mount the catalog read-only so the AI sees the same file the humans do —
+    # single source of truth.
+    volumes:
+      - ./metric-catalog.md:/app/metric-catalog.md:ro
+    ports:
+      - "8000:8000"
+    networks: [shop]
+
 volumes:
   mysql-data:
   prometheus-data:
