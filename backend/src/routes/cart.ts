@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { asyncHandler, HttpError } from '../util.js';
+import { ecomCartItemsAddedTotal, stampRouteTemplate } from '../metrics.js';
 
 const router = Router();
+router.use(stampRouteTemplate);
 router.use(requireAuth);
 
 async function getOrCreateCart(userId: number): Promise<{ id: number }> {
@@ -48,7 +50,7 @@ router.post(
     if (!product_id || quantity <= 0) throw new HttpError(400, 'invalid_input');
 
     const [[product]] = await pool.execute<any[]>(
-      'SELECT id, stock FROM products WHERE id = ?',
+      'SELECT id, stock, category FROM products WHERE id = ?',
       [product_id]
     );
     if (!product) throw new HttpError(404, 'product_not_found');
@@ -73,6 +75,10 @@ router.post(
         [cart.id, product_id, quantity]
       );
     }
+    ecomCartItemsAddedTotal.inc(
+      { product_category: (product as { category: string }).category },
+      quantity
+    );
     res.status(201).json({ ok: true });
   })
 );

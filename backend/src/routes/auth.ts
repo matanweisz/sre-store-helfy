@@ -3,8 +3,10 @@ import bcrypt from 'bcryptjs';
 import { pool } from '../db.js';
 import { createSession, deleteSession, requireAuth } from '../auth.js';
 import { asyncHandler, HttpError } from '../util.js';
+import { authLoginAttemptsTotal, stampRouteTemplate } from '../metrics.js';
 
 const router = Router();
+router.use(stampRouteTemplate);
 
 router.post(
   '/signup',
@@ -43,10 +45,16 @@ router.post(
       'SELECT id, email, password_hash FROM users WHERE email = ?',
       [email]
     );
-    if (!row) throw new HttpError(401, 'invalid_credentials');
+    if (!row) {
+      authLoginAttemptsTotal.inc({ outcome: 'invalid_credentials' });
+      throw new HttpError(401, 'invalid_credentials');
+    }
 
     const ok = await bcrypt.compare(password, (row as { password_hash: string }).password_hash);
-    if (!ok) throw new HttpError(401, 'invalid_credentials');
+    if (!ok) {
+      authLoginAttemptsTotal.inc({ outcome: 'invalid_credentials' });
+      throw new HttpError(401, 'invalid_credentials');
+    }
 
     const [[cart]] = await pool.execute<any[]>(
       'SELECT id FROM carts WHERE user_id = ?',
@@ -58,6 +66,7 @@ router.post(
 
     const user = { id: (row as { id: number }).id, email: (row as { email: string }).email };
     const token = await createSession(user);
+    authLoginAttemptsTotal.inc({ outcome: 'succeeded' });
     res.json({ token, user });
   })
 );

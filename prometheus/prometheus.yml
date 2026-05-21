@@ -1,0 +1,27 @@
+# Prometheus scrape config for the eCommerce SRE stack.
+# Single scrape job for the backend's /metrics endpoint.
+# 15s interval matches the default Grafana panel refresh and is fine for our QPS.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'sre-store'
+    env: 'dev'
+
+scrape_configs:
+  - job_name: 'shop-backend'
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - 'backend:4000'
+        labels:
+          service: 'shop-backend'
+
+  # Prometheus scraping itself — useful for the runtime AI agent
+  # to detect "Prometheus is degraded" via scrape_duration_seconds.
+  - job_name: 'prometheus'
+    static_configs:
+      - targets:
+          - 'localhost:9090'

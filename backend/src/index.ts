@@ -3,6 +3,7 @@ import cors from 'cors';
 import { config } from './config.js';
 import { initSchema } from './db.js';
 import { HttpError } from './util.js';
+import { metricsMiddleware, register } from './metrics.js';
 import authRouter from './routes/auth.js';
 import productsRouter from './routes/products.js';
 import cartRouter from './routes/cart.js';
@@ -13,6 +14,17 @@ import ordersRouter from './routes/orders.js';
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// /metrics is registered BEFORE the metrics middleware so the scrape endpoint
+// itself is not labeled into our histograms (which would pollute p95 with the
+// time Prom takes to render the response).
+app.get('/metrics', async (_req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
+});
+
+// All other requests pass through the middleware first.
+app.use(metricsMiddleware);
 
 app.get('/healthz', (_req, res) => {
   res.json({ ok: true });

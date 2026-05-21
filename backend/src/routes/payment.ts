@@ -3,8 +3,15 @@ import { pool, withTransaction } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { asyncHandler, HttpError, sleep } from '../util.js';
 import { config } from '../config.js';
+import {
+  ecomPaymentAmountCentsTotal,
+  ecomPaymentsTotal,
+  stampRouteTemplate,
+  time,
+} from '../metrics.js';
 
 const router = Router();
+router.use(stampRouteTemplate);
 router.use(requireAuth);
 
 router.post(
@@ -43,16 +50,24 @@ router.post(
     const orderId = (order as { id: number }).id;
     const totalCents = (order as { total_cents: number }).total_cents;
 
-    await withTransaction(async (conn) => {
-      await conn.execute(
-        'INSERT INTO payments (order_id, status, provider, amount_cents) VALUES (?, ?, ?, ?)',
-        [orderId, status, provider, totalCents]
-      );
-      await conn.execute('UPDATE orders SET status = ? WHERE id = ?', [
-        failed ? 'payment_failed' : 'paid',
-        orderId,
-      ]);
-    });
+    await time('payment_record', () =>
+      withTransaction(async (conn) => {
+        await conn.execute(
+          'INSERT INTO payments (order_id, status, provider, amount_cents) VALUES (?, ?, ?, ?)',
+          [orderId, status, provider, totalCents]
+        );
+        await conn.execute('UPDATE orders SET status = ? WHERE id = ?', [
+          failed ? 'payment_failed' : 'paid',
+          orderId,
+        ]);
+      })
+    );
+
+    // Business metrics: count by outcome AND sum amount by outcome.
+    // The `failed` outcome is a *business error* (provider declined) even though
+    // the DB transaction succeeded — that's why this counter has its own label.
+    ecomPaymentsTotal.inc({ outcome: status, provider });
+    ecomPaymentAmountCentsTotal.inc({ provider, outcome: status }, totalCents);
 
     if (failed) {
       throw new HttpError(402, 'payment_declined', 'mock provider declined the charge');

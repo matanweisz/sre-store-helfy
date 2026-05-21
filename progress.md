@@ -22,13 +22,13 @@ Live checklist of every step in the 4-hour build. Tick as we go.
 - [ ] Commit: `feat: blueprint (initial.md + guidelines + catalog)`
 
 ## Block 2 — Prometheus + backend instrumentation (25 min)
-- [ ] `npm install prom-client@^15`
-- [ ] `backend/src/metrics.ts` — registry + metric definitions + middleware
-- [ ] Wire middleware into `index.ts`, expose `/metrics`
-- [ ] Business counters in `payment.ts`, `checkout.ts`, `cart.ts`, `auth.ts`
-- [ ] DB query timing for `withTransaction` + `products_related`
-- [ ] `prometheus/prometheus.yml` + `prometheus` service in compose
-- [ ] **Verify**: `curl localhost:4000/metrics | grep ecom_` and Prometheus target UP
+- [x] `npm install prom-client@^15`
+- [x] `backend/src/metrics.ts` — registry + metric definitions + middleware + `time()` DB wrapper + `stampRouteTemplate` per-router middleware
+- [x] Wire middleware into `index.ts`, expose `/metrics` (before middleware so it's not self-labeled)
+- [x] Business counters in `payment.ts`, `checkout.ts`, `cart.ts`, `auth.ts`
+- [x] DB query timing for `checkout_create_order`, `products_related`, `payment_record`
+- [x] `prometheus/prometheus.yml` + `prometheus` service in compose (pinned `prom/prometheus:v3.6.0`)
+- [x] **Verify PASSED**: every catalog metric live; Prometheus shows `shop-backend up`; PromQL `sum by (route)(rate(http_requests_total[1m]))` returns per-route rates. Route labels correctly capture Express templates for 200/201/401/404 paths (the 401-on-baseUrl bug was the one real fix this block).
 - [ ] Commit: `feat(backend): prom-client instrumentation + prometheus service`
 
 ## Block 3 — Elasticsearch + Filebeat + structured logs (20 min)

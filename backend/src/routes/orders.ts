@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { requireAuth } from '../auth.js';
 import { asyncHandler, HttpError } from '../util.js';
+import { stampRouteTemplate } from '../metrics.js';
 
 const router = Router();
+router.use(stampRouteTemplate);
 router.use(requireAuth);
 
 router.get(

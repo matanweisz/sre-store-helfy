@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { pool } from '../db.js';
 import { asyncHandler, HttpError } from '../util.js';
+import { stampRouteTemplate, time } from '../metrics.js';
 
 const router = Router();
+router.use(stampRouteTemplate);
 
 router.get(
   '/',
@@ -49,12 +51,15 @@ router.get(
 );
 
 // Intentionally non-trivial: "customers also bought" via self-join across orders.
-// No supporting indexes — a realistic slow query worth observing.
+// No supporting indexes — a realistic slow query worth observing. Wrapped in
+// `time(...)` so the db_query_duration_seconds{query_name="products_related"}
+// histogram captures it independently from the HTTP histogram.
 router.get(
   '/:id/related',
   asyncHandler(async (req, res) => {
-    const [rows] = await pool.execute<any[]>(
-      `
+    const [rows] = await time('products_related', () =>
+      pool.execute<any[]>(
+        `
       SELECT p.id, p.name, p.price_cents, COUNT(*) AS co_purchase_count
       FROM order_items oi1
       JOIN order_items oi2 ON oi1.order_id = oi2.order_id AND oi1.product_id != oi2.product_id
@@ -64,7 +69,8 @@ router.get(
       ORDER BY co_purchase_count DESC
       LIMIT 5
       `,
-      [req.params['id']!]
+        [req.params['id']!]
+      )
     );
     res.json({ related: rows });
   })
