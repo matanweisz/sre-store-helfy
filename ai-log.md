@@ -17,12 +17,36 @@ The Cline VS Code extension was **not used** in the build phase. The OpenRouter 
 (Filled in continuously as we work through the blocks.)
 
 ### Block 0 — Setup
-- Plan reviewed and approved. Plan file at `~/.claude/plans/in-this-directory-we-replicated-boole.md`.
-- Decision: work in place in `/Users/matan.weisz/git/sre-assignment/` rather than a sibling dir. Original PDF/email/zip stay locally but are `.gitignore`-d from the published repo.
-- Decision: keep `sre-store/` directory as a pristine reference until the build is done (also `.gitignore`-d).
+
+**Plan**: file at `~/.claude/plans/in-this-directory-we-replicated-boole.md`. Reviewed and approved.
+
+**Decisions**:
+- Work in place in `/Users/matan.weisz/git/sre-assignment/` rather than a sibling dir. Original PDF/email/zip stay locally but are `.gitignore`-d from the published repo.
+- Keep `sre-store/` directory as a pristine reference until the build is done (also `.gitignore`-d).
+
+**Manual fix #1 (build-phase AI gap, expected):** Docker config had `"credsStore": "osxkeychain"` left over from a prior Docker Desktop install — this isn't on Rancher Desktop's PATH and broke `docker compose up` on first image pull. Fix: removed the line from `~/.docker/config.json` (backup at `~/.docker/config.json.bak`). For public Docker Hub images no credential helper is needed. Not an LLM failure — environment issue, but logging it because the assignment asks for honesty about manual fixes.
+
+**Verify**: full user-journey smoke test via curl:
+- `POST /api/auth/login` → JWT ✓
+- `POST /api/cart/items` → 201 ✓
+- `POST /api/checkout` → order #1 created, status `pending_payment`, total $151.10 ✓
+- `POST /api/payment` → `paid` (this run got lucky at 8% failure rate) ✓
+- `GET localhost:5173` → 200 ✓
+
+App is uninstrumented as advertised. No `/metrics`, no structured logs, plain `console.log` for errors. Ready for Block 1.
 
 ### Block 1 — Blueprint
-_(TBD)_
+Three files authored by Claude Code (Opus 4.7) in the order: catalog → guidelines → initial.md. Rationale for order: the catalog is the contract everything else must match; guidelines documents the *how*; initial.md is the *do* that references both.
+
+**Catalog (`metric-catalog.md`, 237 lines)**: every metric named with one-line description + why it matters + what normal looks like + what a change implies. Followed the PDF's "strong vs weak" pattern — every entry explains what a change *means*, not just what the metric measures. Forbidden-label list is explicit. Funnel queries enumerated at the bottom so the AI doesn't have to derive them.
+
+**Guidelines (`guidelines.md`, 232 lines)**: log format, metric naming, error-surfacing rules, plus the **reusable procedures** that the PDF specifically calls out as "matters most". The **triage loop** has its own section (§6) with a worked example so the LLM has a concrete template to copy.
+
+**initial.md (339 lines)**: single bootstrap prompt with five phases (instrumentation, logs, Grafana, AI service, demo capture), each with hard verify gates. References `@guidelines.md` and `@metric-catalog.md`. Encodes the SRE system prompt verbatim so the runtime agent and the build-time instructions stay aligned.
+
+**Verify**: regex cross-check confirms every metric name in initial.md is documented in metric-catalog.md. File references resolve (the two referenced YAML files — `prometheus/prometheus.yml` and `filebeat/filebeat.yml` — are *intentionally* not yet present; initial.md instructs the AI to create them in Phases 1 and 2 respectively).
+
+**Manual fix #2 (none in this block).** No AI gaps to log — Blueprint writing was straightforward synthesis from the four research reports + the app source.
 
 ### Block 2 — Prometheus instrumentation
 _(TBD)_

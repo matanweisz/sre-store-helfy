@@ -11,14 +11,14 @@ Live checklist of every step in the 4-hour build. Tick as we go.
 - [x] Seed `progress.md` (this file)
 - [x] Seed `ai-log.md`
 - [x] Seed `.env.example`
-- [ ] First commit
-- [ ] **Verify**: `docker compose up --build` boots the original app; login + checkout + payment work end-to-end
+- [x] First commit (`9307667`)
+- [x] **Verify PASSED**: full user journey via curl — login → cart → checkout → payment → frontend HTTP 200. See Block 0 details in `ai-log.md`.
 
 ## Block 1 — Blueprint authoring (45 min)
-- [ ] `metric-catalog.md` — every metric + log field, opinionated
-- [ ] `guidelines.md` — conventions + reusable procedures + triage loop
-- [ ] `initial.md` — single bootstrap prompt
-- [ ] **Verify**: three files internally consistent, references resolve
+- [x] `metric-catalog.md` — every metric + log field, opinionated (237 lines)
+- [x] `guidelines.md` — conventions + reusable procedures + triage loop (232 lines)
+- [x] `initial.md` — single bootstrap prompt (339 lines)
+- [x] **Verify**: cross-reference check passed — every metric in `initial.md` documented in `metric-catalog.md`; all internal file refs resolve
 - [ ] Commit: `feat: blueprint (initial.md + guidelines + catalog)`
 
 ## Block 2 — Prometheus + backend instrumentation (25 min)
