@@ -1,22 +1,24 @@
 # initial.md — Bootstrap Prompt
 
-> Paste this into Cline (VS Code/Cursor extension) — or any agentic coding LLM with filesystem + shell access — against a fresh checkout of this repo to produce the working observability stack and AI service.
+> Paste this into an agentic coding LLM (Cline, Cursor agent, Claude Code, etc.) with filesystem and shell access, against a fresh checkout of this repo. Run it end to end and you'll get the working observability stack and AI service described in `README.md`.
 >
-> This file is graded on **prompt rigor**: re-running it on a fresh copy should produce a comparable result. It is self-contained, references its companion docs, and has explicit stop-and-verify gates at every phase.
+> The prompt is self-contained, references its two companion docs, and has explicit stop-and-verify gates at every phase. Re-running it on a fresh copy should produce a comparable result.
 
 ---
 
 ## Role
 
-You are a Site Reliability Engineer. You are joining a project that is a Node.js + Express + React eCommerce app, deliberately uninstrumented. Your job is to add the observability layer — Prometheus, structured logs to Elasticsearch, Grafana with provisioned dashboards — and stand up a standalone AI observability service that can investigate the running system via multi-turn LLM tool calls. Your work is graded on whether **an on-call engineer (and an LLM) can use what you build to reason about a live system**, not on whether you wired up every default exporter.
+You are a Site Reliability Engineer joining a project — a Node.js + Express + React eCommerce app that is deliberately uninstrumented. Your job is to add the observability layer (Prometheus metrics, structured logs to Elasticsearch, Grafana with provisioned dashboards) and stand up a standalone AI observability service that investigates the running system via multi-turn LLM tool calls.
+
+The work is graded on whether an on-call engineer (and an LLM) can use what you build to reason about a live system — not on whether you wired up every default exporter.
 
 ## Read these first
 
-1. **`./guidelines.md`** — log format, metric naming, cardinality rules, error-surfacing rules, the reusable procedures (how to add a metric, how to emit a searchable log, how to add a Grafana panel, common PromQL patterns, the triage loop). **The triage loop is the most important part of this file** — the AI runtime agent must follow it.
-2. **`./metric-catalog.md`** — every metric and log field, with one-line description, why it matters, what normal looks like, what a change implies. Every metric in this catalog must be exposed in Prometheus and reachable by the AI service. Catalog ↔ running system ↔ LLM runtime context must agree.
-3. **`./docker-compose.yml`** — the existing stack (MySQL + backend + frontend). You will extend this file.
+1. **[`guidelines.md`](./guidelines.md)** — log format, metric naming, cardinality rules, error-surfacing rules, the reusable procedures (how to add a metric, how to emit a searchable log, how to add a Grafana panel, common PromQL patterns, the triage loop). The triage loop in §6 is what the runtime agent follows.
+2. **[`metric-catalog.md`](./metric-catalog.md)** — every metric and log field with description, normal range, and what a change implies. Every metric named here must be exposed in Prometheus and reachable by the AI service. The catalog, the running system, and the LLM's runtime context have to agree.
+3. **`docker-compose.yml`** — the existing stack (MySQL + backend + frontend). You'll extend this.
 
-If you can't reconcile what these three files say, **ask before writing code**. Don't invent metric names. Don't invent log field names.
+If you can't reconcile what these three files say, ask before writing code. Don't invent metric names or log field names.
 
 ## The app you're instrumenting
 
@@ -36,21 +38,23 @@ If you can't reconcile what these three files say, **ask before writing code**. 
 | GET | /api/orders | JWT | List user's orders |
 | GET | /healthz | — | Health check |
 
-### User journey (the thing being measured)
+### User journey
 
-> **browse → cart → checkout → payment**
+**browse → cart → checkout → payment**
 
-### Intentional behaviors worth instrumenting (gifts from the assignment authors)
+### Intentional behaviors worth instrumenting
 
-- **`GET /api/products/:id/related`** runs an un-indexed self-join across `order_items`. Latency grows with order volume. → instrument with a named DB query histogram (`db_query_duration_seconds{query_name="products_related"}`).
-- **Payment latency is uniformly random in `[120 ms, 450 ms]`.** A p95 histogram panel will show this clearly; a p50 panel will not — that difference matters.
-- **`PAYMENT_FAILURE_RATE` env var (default 0.08)** is hot-configurable. Turning it up and watching the error-rate panel respond is how an evaluator proves your instrumentation works. Bake this into the demo.
-- **Distinct error codes** at checkout (`empty_cart`, `insufficient_stock`) and payment (`order_not_payable`, `payment_declined`). Each is a counter label and a `ecom.error_code` log field.
-- **Product search uses `LIKE '%...%'`** with no full-text index. On 120 rows it's fast; the slow path will appear under volume — your HTTP latency histogram captures it.
+These are gifts from the assignment authors — instrument them deliberately, don't just rely on defaults.
 
-## Order of work, with hard verify gates
+- **`GET /api/products/:id/related`** runs an un-indexed self-join across `order_items`. Latency grows with order volume. Wrap it with a named DB-query histogram (`db_query_duration_seconds{query_name="products_related"}`).
+- **Payment latency is uniform in `[120 ms, 450 ms]`.** A p95 histogram panel shows this clearly; a p50 panel won't. The difference matters.
+- **`PAYMENT_FAILURE_RATE` (default 0.08)** is hot-configurable. Bumping it and watching the error-rate panel respond is how the demo proves your instrumentation works.
+- **Distinct error codes** at checkout (`empty_cart`, `insufficient_stock`) and payment (`order_not_payable`, `payment_declined`). Each becomes a counter label and an `ecom.error_code` log field.
+- **Product search uses `LIKE '%...%'`** with no full-text index. Fast on 120 rows; the slow path appears under volume. The HTTP latency histogram captures it without extra work.
 
-You implement in **five phases**. After each phase, you stop and run the verify gate. If it fails, fix it before moving on. Do **not** combine phases.
+## Order of work, with verify gates
+
+Five phases. Stop after each one and run its verify gate. If the gate fails, fix the root cause before moving on — don't combine phases.
 
 ---
 
@@ -117,17 +121,20 @@ curl -s 'localhost:9090/api/v1/query?query=rate(http_requests_total[1m])' | jq '
 3. Wire `pinoHttp` middleware into `backend/src/index.ts` — **after** CORS, **before** the metrics middleware, so every later log inherits `req.log` with the trace id.
 4. Replace `console.error('unhandled_error', err)` in the error handler with `req.log.error({err, ecom: {error_code: err.code}}, 'unhandled error')`.
 5. Emit structured business events at the same call sites you added counter increments:
-   - payment.ts → `req.log.info({ecom: {order_id, payment_status: status, payment_amount_cents: totalCents}}, 'payment recorded')` after the DB insert; on `failed` outcome the log level is `warn` (because the `HttpError(402, ...)` that follows will promote it to warn via `customLogLevel`).
-   - checkout.ts → `'order_created'` (info) and `'checkout blocked'` (warn) with `ecom.error_code`.
-   - auth.ts → `'login_succeeded'` (info) and `'login failed'` (warn).
+   - `payment.ts` → `req.log.info({ecom: {order_id, payment_status: status, payment_amount_cents: totalCents}}, 'payment recorded')` after the DB insert. On the `failed` outcome the subsequent `HttpError(402, ...)` lets `pino-http`'s `customLogLevel` mark the *request log* as `warn`.
+   - `checkout.ts` → `req.log.info({ecom: {order_id, checkout_total_cents, cart_item_count}}, 'order created')` after the transaction commits.
+   - `auth.ts` → `req.log.info({user: {id}}, 'login succeeded')` after JWT issuance.
+   - Failure events (`checkout blocked`, `login failed`, etc.) are auto-emitted by the global error handler — it catches every `HttpError` and emits `req.log.warn({ecom: {error_code: err.code}}, 'handled error: <code>')`. So you don't need to scatter `warn` calls around route bodies.
 6. Add to `docker-compose.yml`:
-   - `elasticsearch:9.4.1`, single node, `xpack.security.enabled=false`, `discovery.type=single-node`, `ES_JAVA_OPTS=-Xms1g -Xmx1g`. Publish port 9200. Add a `healthcheck` that hits `/_cluster/health` until status is at least yellow.
-   - `kibana:9.4.1` pointed at the ES service. Publish 5601. Optional but useful for the evaluator.
-   - `filebeat:9.4.1`. Run as `root` (required for the docker socket). Mount `/var/run/docker.sock`, `/var/lib/docker/containers:ro`, and `./filebeat/filebeat.yml` to `/usr/share/filebeat/filebeat.yml`. Depend on `elasticsearch` healthy.
+   - `elasticsearch:9.4.1`, single node, `xpack.security.enabled=false`, `discovery.type=single-node`, `ES_JAVA_OPTS=-Xms1g -Xmx1g`. Publish port 9200.
+   - **Healthcheck.** The 9.x image ships *without* `curl` AND `wget`. Use bash's built-in `/dev/tcp`: `test: ["CMD-SHELL", "exec 3<>/dev/tcp/localhost/9200 && echo -e 'GET /_cluster/health HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | grep -E '\"status\":\"(yellow|green)\"' || exit 1"]`. Yellow is acceptable for single-node.
+   - `kibana:9.4.1` pointed at the ES service. Publish 5601. Optional but useful for log exploration.
+   - `filebeat:9.4.1`, run as `root` (needed for the docker socket). The image's ENTRYPOINT is `filebeat`, so your `command:` must include the subcommand explicitly: `["filebeat", "-e", "--strict.perms=false"]`. Mount `/var/run/docker.sock`, `/var/lib/docker/containers:ro`, and `./filebeat/filebeat.yml` into `/usr/share/filebeat/filebeat.yml`. Depend on `elasticsearch: { condition: service_healthy }`.
 7. `filebeat/filebeat.yml`:
-   - `filebeat.autodiscover.providers: [{type: docker, hints.enabled: false, templates: [{condition: {contains: {docker.container.name: "shop-backend"}}, config: [{type: container, paths: ["/var/lib/docker/containers/${data.docker.container.id}/*.log"], parsers: [{container: {format: docker, stream: all}}, {ndjson: {target: "", overwrite_keys: true, expand_keys: true, add_error_key: true}}]}]}]}]`.
-   - `output.elasticsearch.hosts: ["http://elasticsearch:9200"]`, `output.elasticsearch.index: "logs-app.ecom-dev"`. Disable ILM for the demo to avoid the data-stream auto-creation dance: `setup.ilm.enabled: false`, `setup.template.enabled: false` — and explicitly set `output.elasticsearch.allow_older_versions: true`.
-   - `processors: [{add_host_metadata: ~}, {drop_fields: {fields: ["agent", "ecs", "host", "input", "log.file", "stream", "container"], ignore_missing: true}}]` to keep the indexed document tight.
+   - Use the **`filestream` input**, not `container` — `type: container` was deprecated in Filebeat 9.x and will refuse to start. Each filestream input needs a unique `id`; use `shop-backend-${data.docker.container.id}`.
+   - Docker autodiscover provider matching `docker.container.name: shop-backend`. Parsers: `container` (to strip the docker JSON-file envelope) then `ndjson` with `target: ""`, `overwrite_keys: true`, `expand_keys: true`, `add_error_key: true`.
+   - `output.elasticsearch.hosts: ["http://elasticsearch:9200"]`, `output.elasticsearch.index: "logs-app.ecom-dev"`. Disable ILM and template setup for the demo: `setup.ilm.enabled: false`, `setup.template.enabled: false`, `output.elasticsearch.allow_older_versions: true`.
+   - `processors: [{drop_fields: {fields: ["agent", "ecs.version", "input", "log.file", "log.offset", "stream", "container", "docker", "host.name"], ignore_missing: true}}]` keeps the indexed document tight.
 
 **Verify:**
 
@@ -195,28 +202,28 @@ Open `http://localhost:3000`, navigate to the User Journey dashboard, generate s
 
 ### Phase 4 — AI observability service
 
-**Goal:** a Python service in `ai-service/` exposes `POST /investigate` and a CLI. The LLM runs a real multi-turn loop with tool calls against Prometheus + Elasticsearch.
+**Goal:** a Python service in `ai-service/` exposes `POST /investigate` and a CLI. The LLM runs a real multi-turn loop with tool calls against Prometheus and Elasticsearch.
 
-**Tooling pinned by the project owner:**
+**Pinned choices:**
 
 - Language: **Python 3.12**.
 - HTTP framework: **FastAPI**.
 - LLM SDK: **`openai`** Python SDK pointed at OpenRouter (`base_url=https://openrouter.ai/api/v1`).
-- Primary model: **`anthropic/claude-sonnet-4.6`** (best price/quality for 5–10-turn agentic tool calling on OpenRouter as of May 2026).
-- Tool-call style: **native OpenAI-compatible function calling**. No MCP server (mention as an upgrade path in comments).
+- Primary model: **`anthropic/claude-sonnet-4.6`** — best price/quality for 5–10-turn agentic tool calling on OpenRouter as of May 2026.
+- Tool-call style: native OpenAI-compatible function calling. No MCP server (mention it as the natural upgrade path in a docstring).
 
 **Do:**
 
 1. `ai-service/pyproject.toml` — deps: `fastapi`, `uvicorn[standard]`, `openai>=1.50`, `httpx`, `pydantic>=2`. Pin minor versions.
 2. `ai-service/Dockerfile` — `python:3.12-slim`, pip install, copy code, `CMD ["uvicorn", "ai_service.app:app", "--host", "0.0.0.0", "--port", "8000"]`.
-3. `ai-service/ai_service/tools.py` — exposes **four tools**:
-   - `get_metric_catalog()` — read `metric-catalog.md` (mounted into the container), return as a string. Cap at ~6 KB.
-   - `query_prometheus(promql: str, time_range: Literal["5m","15m","1h","24h"])` — hit `{PROMETHEUS_URL}/api/v1/query_range` with `start = now - range`, `end = now`, `step` chosen to keep result ≤ 100 points. Return: `{"resultType": ..., "series": [{"labels": {...}, "samples": [[t, v], ...], "p50": ..., "p95": ...} for the top 10 series]}`. **Pre-aggregate** — if there are >10 series, return the top 10 by sum and a count of dropped series.
-   - `search_logs(query: str, time_range: enum, size: int = 20)` — POST `{ELASTICSEARCH_URL}/logs-app.ecom-dev/_search` with a `bool` filter on `@timestamp >= now - range` and a Lucene `query_string` on the user's query. Return `{total, hits: [{"@timestamp", "log.level", "message", "url.path", "http.response.status_code", "ecom"}]}` — strip everything else to keep payload small.
-   - `get_recent_errors(route: str, time_range: enum)` — convenience wrapper: ES aggs query that buckets the last `time_range` of log records by `ecom.error_code` for the given `url.path`. Returns `{"counts": {"payment_declined": 12, ...}, "total": N}`.
-   - Each tool returns errors as `{"error": "...", "hint": "..."}` JSON, never raises — the LLM should self-correct on the next turn.
-   - Build the `tools` JSON-schema list (OpenAI tool schema) and a `TOOL_REGISTRY` dict by tool name.
-4. `ai-service/ai_service/prompts.py` — system prompt **copy this verbatim** (it encodes the triage loop):
+3. `ai-service/ai_service/tools.py` — four tools:
+   - `get_metric_catalog()` — read `metric-catalog.md` (mounted into the container), return its contents as a string. Cap at ~16 KB; the catalog is the agent's main reference.
+   - `query_prometheus(promql: str, time_range: Literal["5m","15m","1h","24h"])` — hit `{PROMETHEUS_URL}/api/v1/query_range` with `start = now - range`, `end = now`, `step` chosen to keep result ≤ 10 points per series. Pre-aggregate: top 10 series by max value, each with last/min/max/mean and p50/p95 baked in. When `series_count == 0`, return a hint suggesting `get_metric_catalog` — the agent will probably have misspelled a metric name.
+   - `search_logs(query: str, time_range: enum, size: int = 10)` — POST `{ELASTICSEARCH_URL}/logs-app.ecom-dev*/_search` with a `bool` filter on `@timestamp >= now - range` and a `query_string` on the Lucene query. Return hits stripped to ECS essentials: `@timestamp`, `log.level`, `message`, `url.path`, `http.response.status_code`, `event.outcome`, `event.duration_ms`, `ecom.*`, `trace.id`.
+   - `get_recent_errors(route: str, time_range: enum)` — convenience ES aggs query that buckets warn+error logs for an exact `url.path` by `ecom.error_code` and `http.response.status_code`. Returns counts plus a few sample lines.
+   - Tools never raise. On failure they return `{"error": str, "hint": str}` JSON so the model can self-correct on the next turn.
+   - Build the OpenAI-style `tools` JSON-schema list and a `TOOL_REGISTRY` dict by tool name.
+4. `ai-service/ai_service/prompts.py` — system prompt. Copy verbatim:
 
    ```
    You are an SRE doing live triage on the eCommerce app described in metric-catalog.md.
@@ -244,15 +251,16 @@ Open `http://localhost:3000`, navigate to the User Journey dashboard, generate s
      Weak: "checkout p95 is 800ms."
    ```
 
-5. `ai-service/ai_service/app.py` — the FastAPI app + agent loop:
+5. `ai-service/ai_service/app.py` — FastAPI app and the agent loop:
    - `OpenAI(base_url="https://openrouter.ai/api/v1", api_key=os.environ["OPENROUTER_API_KEY"])`.
    - Model from `OPENROUTER_MODEL` env, default `anthropic/claude-sonnet-4.6`.
-   - `POST /investigate` body `{"question": str}`. Calls `investigate(question)`, returns `{"insight": str, "trace": [...], "iterations": int}`.
-   - The loop: maintain `messages`, iterate up to `max_iters=10`. Each iteration: `client.chat.completions.create(model, messages, tools, tool_choice="auto", temperature=0.2)`. Append the assistant message. If no `tool_calls`, return the text content as `insight`. Else for each tool call, look up in registry, call, **truncate result JSON at 8000 chars**, append role=`"tool"` message with `tool_call_id`. Log every iteration to stdout with iter number, tool name, arg summary, and result preview (first 300 chars).
-   - On `max_iters` reached without a tool-free answer, return `{"insight": "Hit iteration cap (10). Partial findings: ..." + last_text_content, "trace": [...], "iterations": max_iters}`.
-   - CLI mode at the bottom: `if __name__ == "__main__": print(json.dumps(investigate(sys.argv[1])))`.
+   - `POST /investigate` with body `{"question": str}` calls `investigate(question)` and returns `{"insight": str, "trace": [...], "iterations": int, "finish_reason": str}`.
+   - The loop: maintain `messages`; iterate up to `max_iters=10`. Each iteration calls `client.chat.completions.create(model, messages, tools, tool_choice="auto", temperature=0.2)`, appends the assistant message, and — if there are no `tool_calls` — returns the text content as `insight`. Otherwise, look up each tool in the registry, call it, truncate result JSON at 8000 chars (16000 for `get_metric_catalog`), append a role=`"tool"` message with the matching `tool_call_id`, and continue.
+   - **Log every iteration to stderr** (NOT stdout) so the CLI mode produces clean JSON on stdout. Use `logging.basicConfig(stream=sys.stderr, ...)`.
+   - If `max_iters` is reached without a tool-free answer, return `finish_reason: "iteration_cap"` with the partial trace.
+   - CLI mode: `if __name__ == "__main__": print(json.dumps(investigate(sys.argv[1])))`.
 6. Add to `docker-compose.yml`:
-   - `ai-service:` build context `./ai-service`. Publish 8000. Env: `OPENROUTER_API_KEY` from `.env`, `PROMETHEUS_URL=http://prometheus:9090`, `ELASTICSEARCH_URL=http://elasticsearch:9200`, `OPENROUTER_MODEL=anthropic/claude-sonnet-4.6`. Mount `./metric-catalog.md` into the container at `/app/metric-catalog.md` (read-only). Depends on `prometheus` and `elasticsearch` healthy.
+   - `ai-service:` build context `./ai-service`. Publish 8000. Env: `OPENROUTER_API_KEY` from `.env`, `PROMETHEUS_URL=http://prometheus:9090`, `ELASTICSEARCH_URL=http://elasticsearch:9200`, `OPENROUTER_MODEL=anthropic/claude-sonnet-4.6`. Mount `./metric-catalog.md` into the container at `/app/metric-catalog.md` (read-only). Depends on `prometheus` started and `elasticsearch` healthy.
 
 **Verify:**
 
@@ -286,20 +294,20 @@ curl -s -X POST localhost:8000/investigate -H 'content-type: application/json' \
 
 ---
 
-### Phase 5 — End-to-end demo capture + README
+### Phase 5 — End-to-end demo and README
 
-**Goal:** the README is review-ready. It includes the architecture, run instructions, dashboard walkthrough with a screenshot, and one **real** AI investigation transcript captured from the live system.
+**Goal:** the README is review-ready. Architecture, run instructions, dashboard walkthrough, and one *real* AI investigation transcript captured from the live system.
 
 **Do:**
 
-1. Write `scripts/drive-traffic.sh` — logs in via the API, browses, carts, checks out, and pays in a 20-iteration loop with small sleeps so events are distributed in time.
+1. `scripts/drive-traffic.sh` — logs in, fires a few bad-credential probes (to populate the warn-level log stream), then loops `N` iterations of browse + cart + checkout + pay with a small sleep between iterations so events distribute in time.
 2. Reset clean: `docker compose down -v && docker compose up --build -d`. Wait 30 s for health.
-3. Drive normal traffic at default failure rate.
-4. Bump failure rate (`PAYMENT_FAILURE_RATE=0.5`), restart backend, drive again.
-5. `curl POST localhost:8000/investigate` with the question above → save full response to `docs/sample-investigation.json`.
-6. Embed in README "Sample AI Investigation" section: the question, a short narration of which tools the LLM chose and why, then the final insight verbatim. The trace should show clear multi-turn reasoning.
-7. Take a screenshot of the User Journey dashboard with traffic active → `docs/dashboard-screenshot.png`. Embed in README.
-8. Fill in README sections that were placeholders: Observability Stack (metrics + logs), AI Service (architecture + tools + sample), Dashboard Walkthrough (per-panel), AI-Gap Awareness (cite the running `ai-log.md` notes), Tradeoffs (cardinality / sampling / log volume — per `guidelines.md` §7).
+3. Drive normal traffic at the default failure rate.
+4. Bump the failure rate (`PAYMENT_FAILURE_RATE=0.5`), restart the backend, drive again.
+5. `curl POST localhost:8000/investigate` with the question used in your demo → save the full response to `docs/sample-investigation.json`.
+6. In the README's "Sample AI Investigation" section: include the question, a short narration of which tools the LLM picked and in what order, and the final insight verbatim. The trace should make multi-turn reasoning obvious.
+7. Take a screenshot of the dashboard with traffic active (manually, in a browser — the Grafana image renderer plugin isn't included) and save it as `docs/dashboard-screenshot.png`. Embed it in the README.
+8. Fill in the README's other sections: Observability Stack (metrics + logs), AI Service (architecture, tools, sample), Dashboard Walkthrough (per panel), AI-Gap Awareness (cite the running `ai-log.md`), Tradeoffs (cardinality / sampling / log volume — per `guidelines.md` §7).
 
 **Verify:**
 
@@ -319,21 +327,21 @@ If that returns a coherent narrative, you're done.
 
 ---
 
-## Stop conditions / guardrails
+## Stop conditions and guardrails
 
-- **Never** label metrics with `user_id`, `order_id`, `payment_id`, `request_id`, `trace_id`, raw URL paths, error messages, SKUs, emails. The forbidden list is in `guidelines.md` §2.
-- **Never** use `:latest` image tags. Pin every image.
-- If a build fails: read the error, fix the root cause. Never `--no-verify` or skip hooks.
-- Do not modify anything in `frontend/`. The PDF explicitly says polishing the app is not the point.
-- Do not invent metric names. If a metric you want isn't in the catalog, **add it to the catalog first** in the same commit, with the four-line annotation (description, why, normal, change implies).
-- If you find yourself prompting the LLM through five attempts to do the same thing, stop, write the code yourself, and add an entry to `ai-log.md` describing what the AI couldn't do. That honesty is itself graded.
+- **Never** label metrics with `user_id`, `order_id`, `payment_id`, `request_id`, `trace_id`, raw URL paths, error messages, SKUs, or emails. The full forbidden list is in `guidelines.md` §2.
+- **Never** use `:latest` image tags. Pin every image to a specific version.
+- If a build fails, read the error and fix the root cause. Don't `--no-verify` or skip hooks.
+- Don't modify anything in `frontend/`. The assignment is explicit that polishing the app isn't the point.
+- Don't invent metric names. If a metric you want isn't in the catalog, add it to the catalog first in the same commit (description + why it matters + normal + change implies).
+- If you find yourself prompting the LLM through five attempts to do the same thing, stop, write the code yourself, and add an entry to `ai-log.md` describing what the LLM couldn't do. Honest manual-fix logs are part of the deliverable.
 
-## Definition of done (whole assignment)
+## Definition of done
 
-- `docker compose up --build` boots all 7 services healthy: `mysql`, `backend`, `frontend`, `prometheus`, `elasticsearch`, `kibana`, `filebeat`, `grafana`, `ai-service`.
+- `docker compose up --build` brings up nine services healthy: `mysql`, `backend`, `frontend`, `prometheus`, `elasticsearch`, `kibana`, `filebeat`, `grafana`, `ai-service`.
 - `curl localhost:4000/metrics` exposes every metric named in `metric-catalog.md`.
-- `curl localhost:9200/logs-app.ecom-dev/_search` returns ECS-shaped records with the fields named in `metric-catalog.md` "Log fields" section.
-- `http://localhost:3000` opens to the User Journey dashboard without login; every panel renders with live data after traffic.
-- `POST http://localhost:8000/investigate` returns a narrative answer; the `trace` array shows ≥ 2 distinct tool calls; the answer references catalog metric names and includes the time window.
-- README has a real sample investigation captured from a live run.
-- `ai-log.md` lists model choices and at least one honest manual-fix entry (the assignment explicitly grades this).
+- `curl localhost:9200/logs-app.ecom-dev*/_search` returns ECS-shaped records with the fields listed in the catalog's "Log fields" section.
+- `http://localhost:3000` opens to the User Journey dashboard without a login. Every panel renders with live data after traffic.
+- `POST http://localhost:8000/investigate` returns a narrative answer. The `trace` array has at least two distinct tool calls. The answer references catalog metric names and includes the time window it analyzed.
+- The README has a real sample investigation captured from a live run.
+- `ai-log.md` lists model choices and at least one honest manual-fix entry.

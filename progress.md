@@ -1,86 +1,18 @@
-# Progress Tracker
+# Build Journey
 
-Live checklist of every step in the 4-hour build. Tick as we go.
+A short summary of how this repo was built. The full per-block detail (including every manual fix) lives in [`ai-log.md`](./ai-log.md). For run instructions and the final architecture, see [`README.md`](./README.md).
 
-## Block 0 — Setup + repo init (15 min)
-- [x] `git init` on the working dir
-- [x] `.gitignore` excluding original PDF/email/zip + sre-store/
-- [x] Copy `backend/`, `frontend/`, `docker-compose.yml` up to root
-- [x] Save original README as `README.original.md`
-- [x] Seed `README.md` (with skeleton sections)
-- [x] Seed `progress.md` (this file)
-- [x] Seed `ai-log.md`
-- [x] Seed `.env.example`
-- [x] First commit (`9307667`)
-- [x] **Verify PASSED**: full user journey via curl — login → cart → checkout → payment → frontend HTTP 200. See Block 0 details in `ai-log.md`.
+The build was split into eight blocks of ~15–45 minutes each, run sequentially with a `docker compose up` verify gate at the end of every block. The commit log mirrors the block structure — one commit per block — so `git log --oneline` is the fastest way to navigate the history.
 
-## Block 1 — Blueprint authoring (45 min)
-- [x] `metric-catalog.md` — every metric + log field, opinionated (237 lines)
-- [x] `guidelines.md` — conventions + reusable procedures + triage loop (232 lines)
-- [x] `initial.md` — single bootstrap prompt (339 lines)
-- [x] **Verify**: cross-reference check passed — every metric in `initial.md` documented in `metric-catalog.md`; all internal file refs resolve
-- [ ] Commit: `feat: blueprint (initial.md + guidelines + catalog)`
+| Block | What it produced | Commit |
+|---|---|---|
+| 0 — Setup | Repo init, baseline app booted as-is to confirm a known-good starting point. | `9307667 chore: baseline imported` |
+| 1 — Blueprint | `metric-catalog.md`, `guidelines.md`, `initial.md` — the three contract files. | `4387ba2 feat: blueprint` |
+| 2 — Metrics | `prom-client` instrumentation, Prometheus service, business counters at the route call sites, DB-query timing. | `9c1c073 feat(backend): prom-client + prometheus` |
+| 3 — Logs | `pino` + `pino-http` writing ECS JSON, Filebeat shipping to Elasticsearch, Kibana for ad-hoc exploration. | `0f76204 feat: pino + filebeat -> elasticsearch` |
+| 4 — Dashboard | Grafana with provisioned datasources (pinned UIDs) and the User Journey dashboard. | `843b265 feat: grafana User Journey dashboard` |
+| 5 — AI service | FastAPI + the four tools + the agent loop + the SRE triage system prompt. | `bfbc8a7 feat: AI observability service` |
+| 6 — Demo capture | Traffic generator, canonical investigation transcript, README filled in. | `0007be5 docs: sample investigation + README polish` |
+| 7 — Polish | This block. Documentation tightened across the repo before submission. | _(pending)_ |
 
-## Block 2 — Prometheus + backend instrumentation (25 min)
-- [x] `npm install prom-client@^15`
-- [x] `backend/src/metrics.ts` — registry + metric definitions + middleware + `time()` DB wrapper + `stampRouteTemplate` per-router middleware
-- [x] Wire middleware into `index.ts`, expose `/metrics` (before middleware so it's not self-labeled)
-- [x] Business counters in `payment.ts`, `checkout.ts`, `cart.ts`, `auth.ts`
-- [x] DB query timing for `checkout_create_order`, `products_related`, `payment_record`
-- [x] `prometheus/prometheus.yml` + `prometheus` service in compose (pinned `prom/prometheus:v3.6.0`)
-- [x] **Verify PASSED**: every catalog metric live; Prometheus shows `shop-backend up`; PromQL `sum by (route)(rate(http_requests_total[1m]))` returns per-route rates. Route labels correctly capture Express templates for 200/201/401/404 paths (the 401-on-baseUrl bug was the one real fix this block).
-- [ ] Commit: `feat(backend): prom-client instrumentation + prometheus service`
-
-## Block 3 — Elasticsearch + Filebeat + structured logs (20 min)
-- [x] `npm install pino pino-http`
-- [x] `backend/src/logger.ts` — ECS-aligned pino + pino-http wrapper, ECS root-level fields via `customProps` (not nested req/res), @timestamp via custom `timestamp` fn
-- [x] Wire `pinoHttp` middleware; skip /metrics and /healthz; replace `console.error` in error handler with structured `req.log.error`
-- [x] Event logs in payment.ts (`payment recorded`), checkout.ts (`order created`), auth.ts (`login succeeded`)
-- [x] `elasticsearch:9.4.1` + `kibana:9.4.1` + `filebeat:9.4.1` services in compose; ES heap pinned 1G; security off; healthcheck via bash /dev/tcp probe
-- [x] `filebeat/filebeat.yml` with `filestream` input + container + ndjson parsers, docker autodiscover, ECS-friendly drop_fields
-- [x] **Verify PASSED**: 42 docs indexed; `payment recorded` events carry full `ecom.{order_id, payment_status, payment_amount_cents}`; `url.path` flat at root using Express `originalUrl`; log.level distribution shows info+warn split correctly.
-- [ ] Commit: `feat: structured logging via pino + filebeat -> elasticsearch`
-
-## Block 4 — Grafana + dashboard (25 min)
-- [x] `grafana/provisioning/datasources/datasources.yaml` (pinned UIDs `prometheus` + `elasticsearch`, ES targets `logs-app.ecom-dev*` data stream)
-- [x] `grafana/provisioning/dashboards/dashboards.yaml` (file provider, watching /var/lib/grafana/dashboards)
-- [x] `grafana/dashboards/user-journey.json` — 9 panels in 3 rows: RED (rate-by-route, status family, error %, latency p50/p95/p99) + funnel (cart-adds, checkouts, payments, failure-rate) + Logs panel
-- [x] `grafana` service in compose (grafana:11.4.0 with anonymous admin envs)
-- [x] **Verify PASSED**: localhost:3000 health 200; provisioned datasources query via proxy (Prom request-rate per route + p95 per route); ES proxy via _msearch returns warn/error logs with full ECS fields; dashboard discovered in SRE folder with 12 panel entries.
-- [ ] Commit: `feat: grafana with provisioned User Journey dashboard`
-
-## Block 5 — AI observability service (45 min)
-- [x] `ai-service/` skeleton (Dockerfile pinned python:3.12-slim, pyproject.toml deps frozen)
-- [x] `tools.py` — 4 tools (`get_metric_catalog`, `query_prometheus`, `search_logs`, `get_recent_errors`) + OpenAI-style JSON schemas + TOOL_REGISTRY; payloads pre-aggregated (top-10 series, ECS-stripped log hits); empty-result hint for misspelled metric names
-- [x] `prompts.py` — SRE triage system prompt with strong-vs-weak template
-- [x] `app.py` — FastAPI + agent loop (max 10 iter, 8KB tool-result cap, JSON-stderr logs for clean CLI stdout) + CLI mode
-- [x] `ai-service` in compose with OPENROUTER_API_KEY from .env, mount metric-catalog.md read-only
-- [x] **Verify PASSED**: investigate "payment failures, 5min" → 3 iter, 4 tool calls (query_prometheus×2, get_recent_errors, query_prometheus), strong-output narrative with hypothesis + supporting + negative evidence + next action. CLI mode prints clean JSON. Catalog hint made LLM self-correct on a misspelled metric name in iter 1→2.
-- [ ] Commit: `feat: AI observability service with multi-turn tool calling`
-
-## Block 6 — E2E drill + sample investigation (30 min)
-- [x] `scripts/drive-traffic.sh` (logs in, bad-logins, browse+cart+checkout+pay loop with configurable iterations)
-- [x] Run clean baseline traffic (8% failure rate), then bumped to 0.5 and ran again — Prometheus showed 37.9% failure rate in the 5m window
-- [x] Capture investigation into `docs/sample-investigation.json` (3 iter / 7 tool calls — parallel queries in iter 0, catalog consult in iter 1, negative evidence in iter 2)
-- [x] Capture dashboard panel state into `docs/dashboard-state.json` (since the Grafana image renderer plugin isn't installed — a manual screenshot from the browser would be a nice-to-have for the README before submission)
-- [x] Embed in README "Sample AI Investigation" section verbatim — includes the trace table, the strong-output narrative, and a callout that it explicitly cites `metric-catalog.md`'s diagnostic guidance
-- [x] Also filled in Observability Stack, AI Service, Dashboard Walkthrough, AI-Gap Awareness, Tradeoffs sections (originally planned for Block 7 — pulled them forward while context was fresh)
-- [x] **Verify PASSED**: README is review-ready end-to-end, every relative link resolves, captured transcript has ≥2 distinct tool calls AND references catalog metric names AND includes the time window AND has a concrete next action
-- [ ] Commit: `docs: sample AI investigation transcript`
-
-## Block 7 — README polish + push (20 min)
-- [ ] Fill in all README placeholder sections
-- [ ] Capture dashboard screenshot
-- [ ] Fresh-clone verification in /tmp/test-clone
-- [ ] Push to GitHub, flip to public
-- [ ] Final commit: `docs: README polished + ready for review`
-
-## Block 8 — Submit (5 min)
-- [ ] Reply email sent to hadar.d@helfy.co
-
----
-
-## Running notes
-
-- **Started**: TBD when Block 0 verify gate passes
-- **Environment**: Rancher Desktop on macOS (Apple Silicon), dockerd engine, VM 5.7 GB RAM (target was 8 GB; full Rancher restart may be needed if anything stalls)
+The `ai-log.md` records twelve named manual fixes across the build — most of them on stack-specific gotchas (Filebeat 9.x deprecations, Express `req.baseUrl` clearing on the error path, Elasticsearch 9.x's stripped image, pino-http's nested serializer shape). All caught at the verify gate of the block where they happened.
