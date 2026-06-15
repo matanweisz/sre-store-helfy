@@ -10,8 +10,21 @@ dependencies = [
     "openai>=1.50,<2.0",
     "httpx>=0.27,<0.30",
     "pydantic>=2.7,<3.0",
+    "pydantic-settings>=2.4,<3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "respx>=0.21,<0.23",
 ]
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ai_service"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

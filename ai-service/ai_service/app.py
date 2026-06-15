@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 import time
 from typing import Any
@@ -14,17 +13,9 @@ from fastapi import FastAPI, HTTPException
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from .config import get_settings
 from .prompts import SRE_SYSTEM_PROMPT
 from .tools import TOOL_REGISTRY, TOOLS
-
-# ─── env ───────────────────────────────────────────────────────────────────────
-
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.6")
-MAX_AGENT_ITERATIONS = int(os.environ.get("MAX_AGENT_ITERATIONS", "10"))
-TOOL_RESULT_CAP_CHARS = int(os.environ.get("TOOL_RESULT_CAP_CHARS", "8000"))
-CATALOG_RESULT_CAP_CHARS = int(os.environ.get("CATALOG_RESULT_CAP_CHARS", "16000"))
 
 # ─── progress + logging ────────────────────────────────────────────────────────
 # Two surfaces: a one-line human-readable status to stderr (for `docker compose
@@ -33,7 +24,6 @@ CATALOG_RESULT_CAP_CHARS = int(os.environ.get("CATALOG_RESULT_CAP_CHARS", "16000
 # AI_STRUCTURED_LOGS env is set, so the default surface stays clean.
 
 _quiet = False  # set by the CLI --quiet flag
-_emit_json = os.environ.get("AI_STRUCTURED_LOGS", "").lower() in ("1", "true", "yes")
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format="%(message)s")
 _jlog = logging.getLogger("ai_service")
@@ -44,7 +34,7 @@ def progress(line: str, **fields: Any) -> None:
     if not _quiet:
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
-    if _emit_json:
+    if get_settings().ai_structured_logs:
         payload = {"@timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "msg": line, **fields}
         _jlog.warning(json.dumps(payload, default=str))
 
@@ -70,12 +60,13 @@ _client: OpenAI | None = None
 def get_client() -> OpenAI:
     global _client
     if _client is None:
-        if not OPENROUTER_API_KEY:
+        s = get_settings()
+        if not s.openrouter_api_key:
             raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY env var is empty")
         # OpenRouter recommends sending Referer + X-Title so usage attribution works.
         _client = OpenAI(
-            api_key=OPENROUTER_API_KEY,
-            base_url=OPENROUTER_BASE_URL,
+            api_key=s.openrouter_api_key,
+            base_url=s.openrouter_base_url,
             default_headers={
                 "HTTP-Referer": "https://github.com/matanweisz/ai-observability-shop",
                 "X-Title": "AI-Driven Observability",
@@ -116,13 +107,17 @@ class InvestigateResponse(BaseModel):
 
 
 def _truncate(name: str, payload: str) -> tuple[str, bool]:
-    cap = CATALOG_RESULT_CAP_CHARS if name == "get_metric_catalog" else TOOL_RESULT_CAP_CHARS
+    s = get_settings()
+    cap = s.catalog_result_cap_chars if name == "get_metric_catalog" else s.tool_result_cap_chars
     if len(payload) <= cap:
         return payload, False
     return payload[:cap] + f"\n\n[TRUNCATED at {cap} chars — call with narrower args]", True
 
 
 def investigate(question: str) -> InvestigateResponse:
+    s = get_settings()
+    model = s.openrouter_model
+    max_iterations = s.max_agent_iterations
     client = get_client()
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SRE_SYSTEM_PROMPT},
@@ -133,10 +128,10 @@ def investigate(question: str) -> InvestigateResponse:
 
     progress(f"[ai] ▶ investigating: {question[:80]}{'...' if len(question) > 80 else ''}")
 
-    for iteration in range(MAX_AGENT_ITERATIONS):
+    for iteration in range(max_iterations):
         try:
             resp = client.chat.completions.create(
-                model=OPENROUTER_MODEL,
+                model=model,
                 messages=messages,  # type: ignore[arg-type]
                 tools=TOOLS,  # type: ignore[arg-type]
                 tool_choice="auto",
@@ -146,7 +141,7 @@ def investigate(question: str) -> InvestigateResponse:
             progress(f"[ai] ✗ LLM call failed: {e}")
             return InvestigateResponse(
                 question=question,
-                model=OPENROUTER_MODEL,
+                model=model,
                 insight=f"LLM call failed: {e}",
                 trace=trace,
                 iterations=iteration,
@@ -174,7 +169,7 @@ def investigate(question: str) -> InvestigateResponse:
             progress(f"[ai] ✔ done — {iteration + 1} iters, {len(trace)} tool calls, {elapsed} ms")
             return InvestigateResponse(
                 question=question,
-                model=OPENROUTER_MODEL,
+                model=model,
                 insight=msg.content or "(empty response)",
                 trace=trace,
                 iterations=iteration + 1,
@@ -220,13 +215,13 @@ def investigate(question: str) -> InvestigateResponse:
             messages.append({"role": "tool", "tool_call_id": tc.id, "content": payload})
 
     elapsed = int((time.monotonic() - started) * 1000)
-    progress(f"[ai] ⚠ hit {MAX_AGENT_ITERATIONS}-iteration cap, returning partial findings ({elapsed} ms)")
+    progress(f"[ai] ⚠ hit {max_iterations}-iteration cap, returning partial findings ({elapsed} ms)")
     return InvestigateResponse(
         question=question,
-        model=OPENROUTER_MODEL,
-        insight=f"Investigation hit the {MAX_AGENT_ITERATIONS}-iteration cap without converging. Trace below shows what was attempted.",
+        model=model,
+        insight=f"Investigation hit the {max_iterations}-iteration cap without converging. Trace below shows what was attempted.",
         trace=trace,
-        iterations=MAX_AGENT_ITERATIONS,
+        iterations=max_iterations,
         finish_reason="iteration_cap",
         elapsed_ms=elapsed,
     )
@@ -243,10 +238,11 @@ app = FastAPI(
 
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
+    s = get_settings()
     return {
         "ok": True,
-        "model": OPENROUTER_MODEL,
-        "api_key_present": bool(OPENROUTER_API_KEY),
+        "model": s.openrouter_model,
+        "api_key_present": bool(s.openrouter_api_key),
         "tools": [t["function"]["name"] for t in TOOLS],
     }
 
