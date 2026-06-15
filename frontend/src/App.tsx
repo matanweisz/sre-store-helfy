@@ -29,9 +29,6 @@ export default function App() {
   return (
     <>
       <nav>
-        <Link to="/" style={{ display: 'flex', alignItems: 'center' }}>
-          <img src="/logo.png" alt="Helfy" style={{ height: 44, width: 'auto' }} />
-        </Link>
         <Link to="/">Shop</Link>
         <Link to="/cart">Cart</Link>
         {authed && <Link to="/account">Account</Link>}

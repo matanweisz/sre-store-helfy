@@ -1,5 +1,5 @@
 {
-  "name": "sre-assignment-backend",
+  "name": "shop-backend",
   "version": "1.0.0",
   "description": "Minimal eCommerce backend - intentionally uninstrumented",
   "type": "module",

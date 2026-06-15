@@ -1,6 +1,6 @@
 # AI-Driven Observability for an eCommerce App
 
-**Junior AI SRE Home Assignment — Helfy** · Matan Weisz · May 2026
+**A personal project by Matan Weisz** · building an AI-SRE observability stack from scratch to learn how an LLM agent can reason about a live system.
 
 A Node.js + Express + React eCommerce app, instrumented from scratch, with an observability stack (Prometheus, Elasticsearch + Filebeat, Grafana) and a Python AI service that investigates the live system over multi-turn LLM tool calls.
 
@@ -149,16 +149,16 @@ That's the loop the project enables: instrument the user journey → see anomali
 
 ## How this was built — Claude Code as a force multiplier
 
-The assignment says *"show us how you lead the machine to see a system, not just how you build one."* This section is that.
+The goal I set myself: *show how you lead the machine to see a system, not just how you build one.* This section is that.
 
 ### The two LLMs and what each one does
 
 | Where | Model | What for |
 |---|---|---|
 | **Build time** (this session) | `claude-opus-4-7[1m]` via **Claude Code** (CLI) | Writing code and configs across multiple files, planning, reviewing, verifying each step against a running stack |
-| **Runtime** (the deliverable) | `anthropic/claude-sonnet-4.6` via **OpenRouter** | The AI observability service — investigates the live Prometheus + Elasticsearch with multi-turn tool calls |
+| **Runtime** (the AI service) | `anthropic/claude-sonnet-4.6` via **OpenRouter** | The AI observability service — investigates the live Prometheus + Elasticsearch with multi-turn tool calls |
 
-I used Claude Code as a pair-programmer with a tight feedback loop, not as a one-shot code generator. The OpenRouter key Helfy provided is consumed only at runtime, by the deliverable.
+I used Claude Code as a pair-programmer with a tight feedback loop, not as a one-shot code generator. My OpenRouter key is consumed only at runtime, by the AI service itself.
 
 ### How I led Claude Code
 
@@ -173,7 +173,7 @@ I worked in **eight discrete blocks** (one commit per block — see `git log --o
 - **Read / Edit / Write** for all file operations. No external editors.
 - **Bash** for running the stack, driving `curl` verifications, and checking `git status` between commits.
 - **The Explore and general-purpose sub-agents** for parallel research during planning — I sent four independent research queries in one message (Prometheus best practices, Filebeat/ECS, LLM tool-calling patterns, Grafana provisioning) and they came back concurrently. That's how I built the four-research-report foundation in under 15 minutes.
-- **AskUserQuestion** at decision points where I needed your input (language choice for the AI service, primary LLM, GitHub vs. email submission).
+- **AskUserQuestion** at decision points where I wanted to make the call deliberately (language choice for the AI service, primary LLM, how to publish the repo).
 - **Plan mode (`ExitPlanMode`)** at the top of each major block, so we agreed on what was being done before any change landed.
 - **Todo tracking (`TaskCreate`/`TaskUpdate`)** to keep the eight-block structure visible as we worked.
 

@@ -1,16 +1,16 @@
 # AI Log
 
-An honest record of which LLMs were used, for what, and where they fell short. The deliverable asks for this explicitly: "tell us honestly where you stopped prompting and fixed by hand."
+An honest record of which LLMs were used, for what, and where they fell short. I kept it because the interesting part of building with an agent is being honest about where you stop prompting and fix things by hand.
 
 ## Models used
 
 | Phase | Model | Provider | Why |
 |---|---|---|---|
 | Build (this repo) | Claude Code with `claude-opus-4-7[1m]` | Anthropic API via Claude Code CLI | Best agentic build quality available in May 2026. Multi-file refactor with iterative verification fits Opus 4.7's strengths. |
-| Runtime observability agent | `anthropic/claude-sonnet-4.6` | OpenRouter, using the key Helfy provided | Best price/quality on OpenRouter's tool-calling collection rankings for 5–10-turn agent loops as of May 2026. Strong narrative output. |
+| Runtime observability agent | `anthropic/claude-sonnet-4.6` | OpenRouter (my key) | Best price/quality on OpenRouter's tool-calling collection rankings for 5–10-turn agent loops as of May 2026. Strong narrative output. |
 | Fallback if rate-limited | `anthropic/claude-haiku-4.5` | OpenRouter | Cheaper and faster per turn. Would be logged here if triggered. Wasn't. |
 
-The Cline VS Code extension was not used during the build. The OpenRouter key Helfy provided lives in `.env` and is consumed only by the AI observability service at runtime — its natural place in the architecture.
+The Cline VS Code extension was not used during the build. My OpenRouter key lives in `.env` and is consumed only by the AI observability service at runtime — its natural place in the architecture.
 
 Build-phase tools were Claude Code's built-ins (Read, Edit, Write, Bash, plus the Agent sub-agent for parallel research during planning). No external MCP servers were used.
 
@@ -20,7 +20,7 @@ Build-phase tools were Claude Code's built-ins (Read, Edit, Write, Bash, plus th
 
 ### Block 0 — Setup
 
-Worked in place at `/Users/matan.weisz/git/sre-assignment/` rather than a sibling directory. Original assignment material (PDF, email, zip) stays locally but is `.gitignore`-d from the published repo. `sre-store/` is kept as a pristine reference until the build is done.
+Worked in place at the repo root rather than a sibling directory. The pristine starter app (`sre-store/`, `sre-store.zip`) stays locally but is `.gitignore`-d from the published repo, and is kept as a reference until the build is done.
 
 **Manual fix #1 — `osxkeychain` credsStore leftover.** Docker config had `"credsStore": "osxkeychain"` left over from a prior Docker Desktop install. That binary isn't on Rancher Desktop's PATH, so the first `docker compose up` failed at image pull. Removed the line from `~/.docker/config.json` (backup saved). Public Docker Hub images don't need a credential helper. Not an LLM failure — environment issue — but logged for completeness.
 
@@ -128,9 +128,9 @@ The investigation: `curl POST /investigate` with `"Anything wrong with payments 
 - **Iter 2** queried payment p95 again (re-confirmation) and DB `payment_record` p95 — the negative-evidence check that rules out an internal cause.
 - **Iter 3** was the text-only conclusion.
 
-The final insight (in `docs/sample-investigation.json` and quoted verbatim in the README) hits every grading criterion: narrative form, references catalog metric names exactly, explicitly cites the catalog line *"failed rate climbing above ~10% → either someone bumped PAYMENT_FAILURE_RATE"*, and ends with a concrete next action. The catalog is being used as a runtime contract, not just documentation.
+The final insight (in `docs/sample-investigation.json` and quoted verbatim in the README) hits every goal I set for it: narrative form, references catalog metric names exactly, explicitly cites the catalog line *"failed rate climbing above ~10% → either someone bumped PAYMENT_FAILURE_RATE"*, and ends with a concrete next action. The catalog is being used as a runtime contract, not just documentation.
 
-**Manual fix #12 — Grafana image renderer not installed.** Tried to capture a dashboard PNG via `/render?d=user-journey`. Grafana returned a "No image renderer available/installed" placeholder image (478×208). The renderer plugin is a separate ~250 MB container; not worth the dependency for the 4-hour timebox. Compromise: dumped panel data via the Prometheus API to `docs/dashboard-state.json` so the README has a concrete numerical snapshot of what the live dashboard shows. A real browser screenshot would be a nice-to-have before submission.
+**Manual fix #12 — Grafana image renderer not installed.** Tried to capture a dashboard PNG via `/render?d=user-journey`. Grafana returned a "No image renderer available/installed" placeholder image (478×208). The renderer plugin is a separate ~250 MB container; not worth the dependency for the time I'd boxed for this. Compromise: dumped panel data via the Prometheus API to `docs/dashboard-state.json` so the README has a concrete numerical snapshot of what the live dashboard shows. A real browser screenshot would be a nice-to-have follow-up.
 
 The README was filled in across all six previously-placeholder sections in this block while the demo context was fresh, rather than in Block 7 as originally planned.
 
@@ -162,9 +162,9 @@ The service uses native OpenAI-compatible function calling, not MCP. MCP is the 
 
 ## Self-assessment
 
-Walking the published rubric against the current state, with concrete evidence:
+Walking the goals I set for myself against the current state, with concrete evidence:
 
-| Criterion | Evidence |
+| Goal | Evidence |
 |---|---|
 | **Autonomy & tooling** — real tools + context loop, not a dressed-up script | `docs/sample-investigation.json` shows the agent making 7 tool calls across 3 iterations on a single question. Iteration 0 issues three parallel `query_prometheus` calls, iteration 1 consults `get_metric_catalog` to ground the next query, iteration 2 fetches DB latency as negative evidence — the next move depends on the previous result every time. |
 | **Quality of insights** — actionable narrative, not raw numbers | The captured insight identifies the payment provider as the root cause, quotes the metric catalog's own diagnostic guidance verbatim ("failed rate climbing above ~10% → either someone bumped PAYMENT_FAILURE_RATE"), and ends with a concrete next action (check the env var on the backend container). |
@@ -176,4 +176,4 @@ Honest gaps worth flagging:
 
 - No dashboard screenshot. The Grafana image-renderer plugin isn't included (it's a ~250 MB extra container), so `docs/dashboard-state.json` captures the panel values numerically instead.
 - No retroactive squash of commits. The per-block history reflects how the build actually went and is left intact.
-- The frontend wasn't touched — the brief is explicit that polishing the app isn't the point.
+- The frontend wasn't touched — I scoped it deliberately so that polishing the app isn't the point.

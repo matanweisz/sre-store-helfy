@@ -1,6 +1,6 @@
 # initial.md — Bootstrap Prompt
 
-> Paste this into an agentic coding LLM (Cline, Cursor agent, Claude Code, etc.) with filesystem and shell access, against a fresh checkout of this repo. Run it end to end and you'll get the working observability stack and AI service described in `README.md`.
+> Paste this into an agentic coding LLM (Cline, Cursor agent, Claude Code, etc.) with filesystem and shell access, against a fresh checkout of the starter app. Run it end to end and you'll get the working observability stack and AI service described in `README.md`.
 >
 > The prompt is self-contained, references its two companion docs, and has explicit stop-and-verify gates at every phase. Re-running it on a fresh copy should produce a comparable result.
 
@@ -334,7 +334,7 @@ If that returns a coherent narrative, you're done.
 - If a build fails, read the error and fix the root cause. Don't `--no-verify` or skip hooks.
 - Don't modify anything in `frontend/`. Polishing the app isn't the point.
 - Don't invent metric names. If a metric you want isn't in the catalog, add it to the catalog first in the same commit (description + why it matters + normal + change implies).
-- If you find yourself prompting the LLM through five attempts to do the same thing, stop, write the code yourself, and add an entry to `ai-log.md` describing what the LLM couldn't do. Honest manual-fix logs are part of the deliverable.
+- If you find yourself prompting the LLM through five attempts to do the same thing, stop, write the code yourself, and add an entry to `ai-log.md` describing what the LLM couldn't do. Honest manual-fix logs are part of the point of this project.
 
 ## Definition of done
 

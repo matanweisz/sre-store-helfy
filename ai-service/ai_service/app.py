@@ -77,8 +77,8 @@ def get_client() -> OpenAI:
             api_key=OPENROUTER_API_KEY,
             base_url=OPENROUTER_BASE_URL,
             default_headers={
-                "HTTP-Referer": "https://github.com/matan-weisz/sre-assignment",
-                "X-Title": "SRE Assignment AI Observability",
+                "HTTP-Referer": "https://github.com/matanweisz/ai-observability-shop",
+                "X-Title": "AI-Driven Observability",
             },
             timeout=httpx.Timeout(60.0, connect=10.0),
             max_retries=1,

@@ -41,8 +41,6 @@ prometheus-data/
 # Local agent / tooling
 .claude/
 
-# Original assignment material — kept locally for reference, not for the submitted repo
-AI-Focused SRE Assignment - PreBuilt Store.pdf
-home-assignment-email.txt
+# Pristine pre-instrumentation starter app — kept locally as a reference, not committed
 sre-store.zip
 sre-store/
