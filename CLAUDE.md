@@ -39,6 +39,8 @@ npm run typecheck
 
 # AI service (Python 3.12, FastAPI + openai SDK pointed at OpenRouter)
 # Run via docker compose; pyproject.toml is the install manifest.
+cd ai-service && pip install -e '.[dev]'   # install with test deps
+pytest                                      # unit tests (httpx mocked via respx)
 ```
 
 Service ports: backend `:4000` (+`/metrics`), frontend `:5173`, prometheus `:9090`, elasticsearch `:9200`, kibana `:5601`, grafana `:3000` (anonymous admin, no login), ai-service `:8000` (`POST /investigate`). Demo creds: `demo@shop.local / demopass`.
@@ -56,7 +58,9 @@ If you add a metric you MUST update the catalog in the same change — the AI ha
 
 **Logging targets ECS field paths, not pino defaults.** `backend/src/logger.ts` reshapes pino-http output so logs land at `url.path`, `http.response.status_code`, `event.duration`, `trace.id` (root-level), not nested under `req`/`res`. `@timestamp` is forced via a custom `timestamp` fn. Filebeat does no field remapping — what the backend emits is what lands in Elasticsearch.
 
-**Filebeat → Elasticsearch is intentionally minimal.** ILM and templates are disabled (`setup.ilm.enabled: false`, `setup.template.enabled: false`) to avoid the data-stream auto-creation dance; index is the literal `logs-app.ecom-dev`. The AI service queries the wildcard `logs-app.ecom-dev*` in `tools.py::ES_LOG_INDEX` so it works whether or not a data stream gets created.
+**Filebeat → Elasticsearch is intentionally minimal.** ILM and templates are disabled (`setup.ilm.enabled: false`, `setup.template.enabled: false`) to avoid the data-stream auto-creation dance; index is the literal `logs-app.ecom-dev`. The AI service queries the wildcard `logs-app.ecom-dev*` (the `es_log_index` setting in `ai_service/config.py`) so it works whether or not a data stream gets created.
+
+**AI-service config is centralized and overridable.** All tunables live in `ai_service/config.py` as a `pydantic-settings` `Settings` object (`get_settings()`, cached) — backend URLs, the ES index, agent caps, and a **log field map** (`es_error_code_field`, `es_url_path_field`, `es_level_field`, `log_domain_namespace`, ...). Defaults reproduce the eCommerce stack exactly, but every value is env-overridable, which is what lets the agent point at a different system without code edits. Don't reintroduce scattered `os.environ` reads in `app.py`/`tools.py` — add a field to `Settings` instead. Unit tests are in `ai-service/tests/` (`pytest`, httpx mocked via `respx`); the `conftest.py` autouse fixture clears the settings + catalog caches between tests.
 
 **Don't "fix" these — they're load-bearing:**
 - `docker-compose.yml` ES healthcheck uses bash `/dev/tcp/localhost/9200`. The ES 9.x image strips both `curl` AND `wget`; this is the canonical no-binary probe.

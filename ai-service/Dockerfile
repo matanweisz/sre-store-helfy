@@ -16,7 +16,8 @@ RUN pip install --upgrade pip && \
       "uvicorn[standard]>=0.32,<0.40" \
       "openai>=1.50,<2.0" \
       "httpx>=0.27,<0.30" \
-      "pydantic>=2.7,<3.0"
+      "pydantic>=2.7,<3.0" \
+      "pydantic-settings>=2.4,<3.0"
 
 # Application code
 COPY ai_service ./ai_service

@@ -8,7 +8,6 @@ the next turn instead of crashing the loop.
 from __future__ import annotations
 
 import math
-import os
 import statistics
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,10 +15,7 @@ from typing import Any
 
 import httpx
 
-PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus:9090")
-ELASTICSEARCH_URL = os.environ.get("ELASTICSEARCH_URL", "http://elasticsearch:9200")
-METRIC_CATALOG_PATH = os.environ.get("METRIC_CATALOG_PATH", "/app/metric-catalog.md")
-ES_LOG_INDEX = "logs-app.ecom-dev*"
+from .config import Settings, get_settings
 
 MAX_PROMQL_SERIES = 10
 MAX_PROMQL_POINTS_PER_SERIES = 10
@@ -40,10 +36,11 @@ _catalog_cache: str | None = None
 def _load_catalog() -> str:
     global _catalog_cache
     if _catalog_cache is None:
-        path = Path(METRIC_CATALOG_PATH)
+        catalog_path = get_settings().metric_catalog_path
+        path = Path(catalog_path)
         if not path.exists():
             return (
-                f"ERROR: metric-catalog.md not found at {METRIC_CATALOG_PATH}. "
+                f"ERROR: metric-catalog.md not found at {catalog_path}. "
                 "The catalog is mounted by docker-compose; the agent is degraded without it."
             )
         _catalog_cache = path.read_text(encoding="utf-8")
@@ -108,7 +105,7 @@ def query_prometheus(promql: str, time_range: str = "15m") -> dict[str, Any]:
     try:
         with httpx.Client(timeout=15.0) as client:
             r = client.get(
-                f"{PROMETHEUS_URL}/api/v1/query_range",
+                f"{get_settings().prometheus_url}/api/v1/query_range",
                 params={"query": promql, "start": start, "end": end, "step": step},
             )
         if r.status_code != 200:
@@ -171,8 +168,14 @@ def _es_filter_time(time_range: str) -> dict[str, Any]:
     return {"range": {"@timestamp": {"gte": f"now-{time_range}", "lte": "now"}}}
 
 
-def _strip_hit(hit: dict[str, Any]) -> dict[str, Any]:
-    """Trim a hit to ECS essentials. Full _source overflows context fast."""
+def _strip_hit(hit: dict[str, Any], settings: Settings | None = None) -> dict[str, Any]:
+    """Trim a hit to ECS essentials. Full _source overflows context fast.
+
+    The ECS field reads below are standard; only the domain namespace (``ecom``
+    by default) is app-specific and is sourced from config so the agent can be
+    pointed at logs that carry a different business namespace (or none).
+    """
+    settings = settings or get_settings()
     src = hit.get("_source", {})
     out: dict[str, Any] = {
         "@timestamp": src.get("@timestamp"),
@@ -194,8 +197,9 @@ def _strip_hit(hit: dict[str, Any]) -> dict[str, Any]:
         out["event.duration_ms"] = round(event["duration"] / 1_000_000, 3)
     if event.get("outcome"):
         out["event.outcome"] = event["outcome"]
-    if src.get("ecom"):
-        out["ecom"] = src["ecom"]
+    namespace = settings.log_domain_namespace
+    if namespace and src.get(namespace):
+        out[namespace] = src[namespace]
     trace = src.get("trace") or {}
     if trace.get("id"):
         out["trace.id"] = trace["id"]
@@ -208,6 +212,7 @@ def search_logs(query: str = "*", time_range: str = "15m", size: int = 10) -> di
     except ValueError as e:
         return {"error": str(e), "hint": "use 5m / 15m / 1h / 24h"}
 
+    s = get_settings()
     size = max(1, min(int(size), MAX_LOG_HITS))
     body = {
         "size": size,
@@ -217,7 +222,7 @@ def search_logs(query: str = "*", time_range: str = "15m", size: int = 10) -> di
     try:
         with httpx.Client(timeout=15.0) as client:
             r = client.post(
-                f"{ELASTICSEARCH_URL}/{ES_LOG_INDEX}/_search",
+                f"{s.elasticsearch_url}/{s.es_log_index}/_search",
                 json=body,
                 headers={"content-type": "application/json"},
             )
@@ -234,7 +239,7 @@ def search_logs(query: str = "*", time_range: str = "15m", size: int = 10) -> di
     hits_meta = data.get("hits", {})
     total = hits_meta.get("total", {})
     total_value = total.get("value", 0) if isinstance(total, dict) else (total or 0)
-    stripped = [_strip_hit(h) for h in hits_meta.get("hits", [])]
+    stripped = [_strip_hit(h, s) for h in hits_meta.get("hits", [])]
 
     return {
         "query": query,
@@ -251,6 +256,7 @@ def get_recent_errors(route: str, time_range: str = "15m") -> dict[str, Any]:
     except ValueError as e:
         return {"error": str(e), "hint": "use 5m / 15m / 1h / 24h"}
 
+    s = get_settings()
     body = {
         "size": 5,
         "sort": [{"@timestamp": "desc"}],
@@ -258,20 +264,20 @@ def get_recent_errors(route: str, time_range: str = "15m") -> dict[str, Any]:
             "bool": {
                 "filter": [
                     time_filter,
-                    {"term": {"url.path": route}},
-                    {"terms": {"log.level": ["warn", "error"]}},
+                    {"term": {s.es_url_path_field: route}},
+                    {"terms": {s.es_level_field: s.error_log_levels}},
                 ]
             }
         },
         "aggs": {
-            "by_error_code": {"terms": {"field": "ecom.error_code", "size": 20, "missing": "(none)"}},
-            "by_status": {"terms": {"field": "http.response.status_code", "size": 10}},
+            "by_error_code": {"terms": {"field": s.es_error_code_field, "size": 20, "missing": "(none)"}},
+            "by_status": {"terms": {"field": s.es_status_code_field, "size": 10}},
         },
     }
     try:
         with httpx.Client(timeout=15.0) as client:
             r = client.post(
-                f"{ELASTICSEARCH_URL}/{ES_LOG_INDEX}/_search",
+                f"{s.elasticsearch_url}/{s.es_log_index}/_search",
                 json=body,
                 headers={"content-type": "application/json"},
             )
@@ -288,7 +294,7 @@ def get_recent_errors(route: str, time_range: str = "15m") -> dict[str, Any]:
     aggs = data.get("aggregations", {})
     by_code = {b["key"]: b["doc_count"] for b in aggs.get("by_error_code", {}).get("buckets", [])}
     by_status = {b["key"]: b["doc_count"] for b in aggs.get("by_status", {}).get("buckets", [])}
-    samples = [_strip_hit(h) for h in data.get("hits", {}).get("hits", [])]
+    samples = [_strip_hit(h, s) for h in data.get("hits", {}).get("hits", [])]
 
     total = data.get("hits", {}).get("total", {})
     total_value = total.get("value", 0) if isinstance(total, dict) else (total or 0)
