@@ -177,7 +177,7 @@ Three rules:
 
 ## 6. The triage loop
 
-When the agent is asked an SRE question ("anything wrong with payments in the last 15 min?"), it follows this loop. The system prompt encodes it verbatim.
+When the agent is asked an SRE question ("anything wrong with payments in the last 15 min?"), it follows this loop. The system prompt (`ai_service/prompts.py`) encodes these five steps verbatim. The prompt itself is **domain-agnostic** — it points the agent at `get_metric_catalog` for the signal names and baselines of whatever system it's deployed against — so the eCommerce specifics in the worked example below are this app's instance, not hardcoded into the prompt. After the loop concludes, a post-hoc structuring pass also returns the conclusion as a typed `IncidentReport` (`ai_service/report.py`) alongside the prose note, so callers get both a human narrative and a machine-readable object.
 
 ### The loop
 

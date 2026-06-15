@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     tool_result_cap_chars: int = 8000
     catalog_result_cap_chars: int = 16000
     ai_structured_logs: bool = False
+    # When set, one line of domain context is appended to the system prompt — a
+    # reuser can orient the agent ("This is a video-encoding pipeline.") without
+    # editing prompts.py. The catalog remains the source of signal-level truth.
+    system_prompt_domain_hint: str = ""
+    # After the agent writes its prose note, run one extra call to also produce a
+    # validated IncidentReport. Set false to skip it (prose only).
+    structured_output: bool = True
 
     # ── backends ─────────────────────────────────────────────────────────────
     prometheus_url: str = "http://prometheus:9090"

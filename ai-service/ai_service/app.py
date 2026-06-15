@@ -14,7 +14,8 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from .config import get_settings
-from .prompts import SRE_SYSTEM_PROMPT
+from .prompts import build_system_prompt
+from .report import IncidentReport, incident_report_schema
 from .tools import TOOL_REGISTRY, TOOLS
 
 # ─── progress + logging ────────────────────────────────────────────────────────
@@ -96,11 +97,72 @@ class ToolCallTrace(BaseModel):
 class InvestigateResponse(BaseModel):
     question: str
     model: str
-    insight: str
+    insight: str  # the prose incident note (human-readable)
+    report: IncidentReport | None = None  # structured form (machine-readable)
     trace: list[ToolCallTrace]
     iterations: int
     finish_reason: str  # "answer" | "iteration_cap" | "error"
     elapsed_ms: int
+
+
+# ─── structured-output pass ──────────────────────────────────────────────────
+
+
+def _strip_code_fence(text: str) -> str:
+    """Strip a leading/trailing ```json fence if the model wrapped its JSON."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.split("\n", 1)[1] if "\n" in t else t[3:]
+        if t.rstrip().endswith("```"):
+            t = t.rstrip()[:-3]
+    return t.strip()
+
+
+def structure_report(client: OpenAI, model: str, prose: str) -> IncidentReport | None:
+    """Convert the agent's prose note into a validated IncidentReport.
+
+    One extra LLM call, kept off the proven investigation loop so it can't change
+    investigation behavior. Tries the provider's strict json_schema response
+    format first, falls back to a plain "JSON only" instruction, and returns None
+    on any failure rather than raising.
+    """
+    if not prose.strip():
+        return None
+    system = (
+        "You convert an SRE incident note into a structured JSON object. Use only "
+        "information present in the note — do not invent evidence or numbers."
+    )
+    user = f"Incident note:\n\n{prose}\n\nReturn the structured report."
+    schema = incident_report_schema()
+
+    # Attempt 1: strict JSON-schema response format (OpenRouter/OpenAI).
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": "incident_report", "strict": True, "schema": schema},
+            },
+            temperature=0,
+        )
+        return IncidentReport.model_validate_json(resp.choices[0].message.content or "")
+    except Exception:  # noqa: BLE001 — fall through to the portable path
+        pass
+
+    # Attempt 2: plain "JSON only" instruction, tolerant of code fences.
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system + " Respond with ONLY a JSON object."},
+                {"role": "user", "content": user + f"\n\nJSON keys: {list(schema['properties'])}"},
+            ],
+            temperature=0,
+        )
+        return IncidentReport.model_validate_json(_strip_code_fence(resp.choices[0].message.content or ""))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ─── agent loop ────────────────────────────────────────────────────────────────
@@ -120,7 +182,7 @@ def investigate(question: str) -> InvestigateResponse:
     max_iterations = s.max_agent_iterations
     client = get_client()
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SRE_SYSTEM_PROMPT},
+        {"role": "system", "content": build_system_prompt(s)},
         {"role": "user", "content": question},
     ]
     trace: list[ToolCallTrace] = []
@@ -165,12 +227,18 @@ def investigate(question: str) -> InvestigateResponse:
         messages.append(assistant_dump)
 
         if not msg.tool_calls:
+            prose = msg.content or "(empty response)"
+            report = structure_report(client, model, prose) if s.structured_output else None
             elapsed = int((time.monotonic() - started) * 1000)
-            progress(f"[ai] ✔ done — {iteration + 1} iters, {len(trace)} tool calls, {elapsed} ms")
+            progress(
+                f"[ai] ✔ done — {iteration + 1} iters, {len(trace)} tool calls, "
+                f"{'report' if report else 'no report'}, {elapsed} ms"
+            )
             return InvestigateResponse(
                 question=question,
                 model=model,
-                insight=msg.content or "(empty response)",
+                insight=prose,
+                report=report,
                 trace=trace,
                 iterations=iteration + 1,
                 finish_reason="answer",
