@@ -185,6 +185,35 @@ services:
       - "8000:8000"
     networks: [shop]
 
+  # Optional: the same four tools exposed over MCP (streamable-http), so any
+  # MCP-capable agent can investigate this stack. Gated behind the `mcp` profile,
+  # so it does NOT start on a plain `docker compose up`. Start it with:
+  #   docker compose --profile mcp up -d ai-mcp     # then http://localhost:8001/mcp
+  # For local agents (Claude Desktop / Cursor) prefer spawning `obs-mcp` over
+  # stdio instead — see ai-service/README or docs.
+  ai-mcp:
+    build: ./ai-service
+    container_name: shop-ai-mcp
+    profiles: ["mcp"]
+    command: ["obs-mcp"]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+    environment:
+      MCP_TRANSPORT: streamable-http
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "8001"
+      PROMETHEUS_URL: http://prometheus:9090
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      METRIC_CATALOG_PATH: /app/metric-catalog.md
+    volumes:
+      - ./metric-catalog.md:/app/metric-catalog.md:ro
+    ports:
+      - "8001:8001"
+    networks: [shop]
+
 volumes:
   mysql-data:
   prometheus-data:
