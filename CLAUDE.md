@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Junior AI SRE home assignment. A deliberately-uninstrumented Node.js + Express + React eCommerce app (`backend/`, `frontend/`) is wrapped in an observability stack (Prometheus, Elasticsearch+Filebeat, Grafana) plus a standalone Python AI service (`ai-service/`) that investigates the running system via multi-turn LLM tool calls against OpenRouter (`anthropic/claude-sonnet-4.6`).
+A personal learning project in AI-driven observability. A deliberately-uninstrumented Node.js + Express + React eCommerce app (`backend/`, `frontend/`) is wrapped in an observability stack (Prometheus, Elasticsearch+Filebeat, Grafana) plus a standalone Python AI service (`ai-service/`) that investigates the running system via multi-turn LLM tool calls against OpenRouter (`anthropic/claude-sonnet-4.6`). I built it to learn how to instrument a system an AI agent can actually reason about.
 
 The build was driven by three **blueprint** docs at the repo root that are the contract every other artifact must agree with — read these before touching anything substantive:
 
@@ -76,7 +76,7 @@ If you add a metric you MUST update the catalog in the same change — the AI ha
 - **`sre-store/` is read-only reference.** It's the pristine pre-instrumentation copy and gitignored — don't edit, don't commit changes inside it.
 - **Pin all image tags.** No `:latest`. Current pins: prometheus `v3.6.0`, ES/Kibana/Filebeat `9.4.1`, Grafana `11.4.0`, MySQL `8.4`.
 - **Don't invent metric or log-field names.** If a name isn't in `metric-catalog.md`, add it to the catalog in the same commit (description + why + normal + change implies).
-- **The Blueprint files are first-class artifacts.** `metric-catalog.md`, `guidelines.md`, `initial.md` are not just docs — re-running `initial.md` against a fresh checkout of `sre-store/` should reproduce the stack. Keep them in sync with the code.
+- **The Blueprint files are first-class artifacts.** `metric-catalog.md`, `guidelines.md`, `initial.md` are not just docs — re-running `initial.md` against a fresh checkout of the starter app should reproduce the stack. Keep them in sync with the code.
 
 ## Environment / Rancher Desktop gotchas
 
