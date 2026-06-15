@@ -13,6 +13,7 @@ Tests construct ``Settings(...)`` directly or call :func:`get_settings` after
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -27,10 +28,24 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore", case_sensitive=False)
 
-    # ── LLM / agent loop ─────────────────────────────────────────────────────
+    # ── LLM provider ─────────────────────────────────────────────────────────
+    # "openrouter" (default, multi-provider via the OpenAI SDK) or "anthropic"
+    # (native SDK — unlocks prompt caching on the system/tools prefix and
+    # structured outputs).
+    llm_provider: Literal["openrouter", "anthropic"] = "openrouter"
+
+    # ── OpenRouter ───────────────────────────────────────────────────────────
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "anthropic/claude-sonnet-4.6"
+
+    # ── native Anthropic (used when llm_provider="anthropic") ────────────────
+    anthropic_api_key: str = ""
+    # Mirrors the OpenRouter default (Sonnet 4.6) for parity/cost; override freely.
+    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_max_tokens: int = 4096
+
+    # ── agent loop ───────────────────────────────────────────────────────────
     max_agent_iterations: int = 10
     tool_result_cap_chars: int = 8000
     catalog_result_cap_chars: int = 16000

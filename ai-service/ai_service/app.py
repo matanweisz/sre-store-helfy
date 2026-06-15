@@ -8,12 +8,11 @@ import sys
 import time
 from typing import Any
 
-import httpx
-from fastapi import FastAPI, HTTPException
-from openai import OpenAI
+from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from .config import get_settings
+from .llm import LLMClient, build_client
 from .prompts import build_system_prompt
 from .report import IncidentReport, incident_report_schema
 from .tools import TOOL_REGISTRY, TOOLS
@@ -53,29 +52,14 @@ def _summarize_args(args: dict[str, Any], width: int = 80) -> str:
     return out if len(out) <= width else out[: width - 3] + "..."
 
 
-# ─── OpenAI client (pointed at OpenRouter) ─────────────────────────────────────
+# ─── LLM client ────────────────────────────────────────────────────────────────
+# The provider (OpenRouter or native Anthropic) is chosen by config; the agent
+# loop below talks only to the neutral LLMClient seam in llm.py. Indirected
+# through a module function so tests can inject a FakeLLMClient.
 
-_client: OpenAI | None = None
 
-
-def get_client() -> OpenAI:
-    global _client
-    if _client is None:
-        s = get_settings()
-        if not s.openrouter_api_key:
-            raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY env var is empty")
-        # OpenRouter recommends sending Referer + X-Title so usage attribution works.
-        _client = OpenAI(
-            api_key=s.openrouter_api_key,
-            base_url=s.openrouter_base_url,
-            default_headers={
-                "HTTP-Referer": "https://github.com/matanweisz/ai-observability-shop",
-                "X-Title": "AI-Driven Observability",
-            },
-            timeout=httpx.Timeout(60.0, connect=10.0),
-            max_retries=1,
-        )
-    return _client
+def make_client() -> LLMClient:
+    return build_client(get_settings())
 
 
 # ─── models ────────────────────────────────────────────────────────────────────
@@ -108,60 +92,14 @@ class InvestigateResponse(BaseModel):
 # ─── structured-output pass ──────────────────────────────────────────────────
 
 
-def _strip_code_fence(text: str) -> str:
-    """Strip a leading/trailing ```json fence if the model wrapped its JSON."""
-    t = text.strip()
-    if t.startswith("```"):
-        t = t.split("\n", 1)[1] if "\n" in t else t[3:]
-        if t.rstrip().endswith("```"):
-            t = t.rstrip()[:-3]
-    return t.strip()
-
-
-def structure_report(client: OpenAI, model: str, prose: str) -> IncidentReport | None:
-    """Convert the agent's prose note into a validated IncidentReport.
-
-    One extra LLM call, kept off the proven investigation loop so it can't change
-    investigation behavior. Tries the provider's strict json_schema response
-    format first, falls back to a plain "JSON only" instruction, and returns None
-    on any failure rather than raising.
-    """
-    if not prose.strip():
+def build_report(client: LLMClient, prose: str) -> IncidentReport | None:
+    """Ask the client for a structured report and validate it. None on failure."""
+    raw = client.structure(prose, incident_report_schema())
+    if not raw:
         return None
-    system = (
-        "You convert an SRE incident note into a structured JSON object. Use only "
-        "information present in the note — do not invent evidence or numbers."
-    )
-    user = f"Incident note:\n\n{prose}\n\nReturn the structured report."
-    schema = incident_report_schema()
-
-    # Attempt 1: strict JSON-schema response format (OpenRouter/OpenAI).
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": "incident_report", "strict": True, "schema": schema},
-            },
-            temperature=0,
-        )
-        return IncidentReport.model_validate_json(resp.choices[0].message.content or "")
-    except Exception:  # noqa: BLE001 — fall through to the portable path
-        pass
-
-    # Attempt 2: plain "JSON only" instruction, tolerant of code fences.
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system + " Respond with ONLY a JSON object."},
-                {"role": "user", "content": user + f"\n\nJSON keys: {list(schema['properties'])}"},
-            ],
-            temperature=0,
-        )
-        return IncidentReport.model_validate_json(_strip_code_fence(resp.choices[0].message.content or ""))
-    except Exception:  # noqa: BLE001
+        return IncidentReport.model_validate(raw)
+    except Exception:  # noqa: BLE001 — a malformed object just means no structured report
         return None
 
 
@@ -178,13 +116,10 @@ def _truncate(name: str, payload: str) -> tuple[str, bool]:
 
 def investigate(question: str) -> InvestigateResponse:
     s = get_settings()
-    model = s.openrouter_model
     max_iterations = s.max_agent_iterations
-    client = get_client()
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(s)},
-        {"role": "user", "content": question},
-    ]
+    client = make_client()
+    client.start(build_system_prompt(s), question)
+    model = client.model
     trace: list[ToolCallTrace] = []
     started = time.monotonic()
 
@@ -192,13 +127,7 @@ def investigate(question: str) -> InvestigateResponse:
 
     for iteration in range(max_iterations):
         try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=messages,  # type: ignore[arg-type]
-                tools=TOOLS,  # type: ignore[arg-type]
-                tool_choice="auto",
-                temperature=0.2,
-            )
+            turn = client.step(TOOLS)
         except Exception as e:  # noqa: BLE001 — surface every LLM failure mode
             progress(f"[ai] ✗ LLM call failed: {e}")
             return InvestigateResponse(
@@ -211,24 +140,9 @@ def investigate(question: str) -> InvestigateResponse:
                 elapsed_ms=int((time.monotonic() - started) * 1000),
             )
 
-        msg = resp.choices[0].message
-        assistant_dump: dict[str, Any] = {"role": "assistant"}
-        if msg.content:
-            assistant_dump["content"] = msg.content
-        if msg.tool_calls:
-            assistant_dump["tool_calls"] = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                }
-                for tc in msg.tool_calls
-            ]
-        messages.append(assistant_dump)
-
-        if not msg.tool_calls:
-            prose = msg.content or "(empty response)"
-            report = structure_report(client, model, prose) if s.structured_output else None
+        if not turn.tool_calls:
+            prose = turn.text or "(empty response)"
+            report = build_report(client, prose) if s.structured_output else None
             elapsed = int((time.monotonic() - started) * 1000)
             progress(
                 f"[ai] ✔ done — {iteration + 1} iters, {len(trace)} tool calls, "
@@ -245,13 +159,8 @@ def investigate(question: str) -> InvestigateResponse:
                 elapsed_ms=elapsed,
             )
 
-        for tc in msg.tool_calls:
-            name = tc.function.name
-            try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-
+        for tc in turn.tool_calls:
+            name, args = tc.name, tc.arguments
             fn = TOOL_REGISTRY.get(name)
             t0 = time.monotonic()
             if fn is None:
@@ -280,7 +189,7 @@ def investigate(question: str) -> InvestigateResponse:
                     truncated=truncated,
                 )
             )
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": payload})
+            client.add_tool_result(tc.id, payload)
 
     elapsed = int((time.monotonic() - started) * 1000)
     progress(f"[ai] ⚠ hit {max_iterations}-iteration cap, returning partial findings ({elapsed} ms)")
@@ -307,10 +216,15 @@ app = FastAPI(
 @app.get("/healthz")
 def healthz() -> dict[str, Any]:
     s = get_settings()
+    if s.llm_provider == "anthropic":
+        model, key_present = s.anthropic_model, bool(s.anthropic_api_key)
+    else:
+        model, key_present = s.openrouter_model, bool(s.openrouter_api_key)
     return {
         "ok": True,
-        "model": s.openrouter_model,
-        "api_key_present": bool(s.openrouter_api_key),
+        "provider": s.llm_provider,
+        "model": model,
+        "api_key_present": key_present,
         "tools": [t["function"]["name"] for t in TOOLS],
     }
 
